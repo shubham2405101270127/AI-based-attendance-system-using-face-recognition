@@ -1,367 +1,463 @@
-from __future__ import annotations
-
-import errno
 import json
 import os
-import types
-import typing as t
 
-from werkzeug.utils import import_string
+from keras.src.api_export import keras_export
 
-if t.TYPE_CHECKING:
-    import typing_extensions as te
+# The type of float to use throughout a session.
+_FLOATX = "float32"
 
-    from .sansio.app import App
+# Epsilon fuzz factor used throughout the codebase.
+_EPSILON = 1e-7
 
+# Default image data format, one of "channels_last", "channels_first".
+_IMAGE_DATA_FORMAT = "channels_last"
 
-T = t.TypeVar("T")
+# Default backend: TensorFlow.
+_BACKEND = "tensorflow"
 
+# Whether NNX is enabled.
+_NNX_ENABLED = False
 
-class ConfigAttribute(t.Generic[T]):
-    """Makes an attribute forward to the config"""
-
-    def __init__(
-        self, name: str, get_converter: t.Callable[[t.Any], T] | None = None
-    ) -> None:
-        self.__name__ = name
-        self.get_converter = get_converter
-
-    @t.overload
-    def __get__(self, obj: None, owner: None) -> te.Self: ...
-
-    @t.overload
-    def __get__(self, obj: App, owner: type[App]) -> T: ...
-
-    def __get__(self, obj: App | None, owner: type[App] | None = None) -> T | te.Self:
-        if obj is None:
-            return self
-
-        rv = obj.config[self.__name__]
-
-        if self.get_converter is not None:
-            rv = self.get_converter(rv)
-
-        return rv  # type: ignore[no-any-return]
-
-    def __set__(self, obj: App, value: t.Any) -> None:
-        obj.config[self.__name__] = value
+# Cap run duration for debugging.
+_MAX_EPOCHS = None
+_MAX_STEPS_PER_EPOCH = None
 
 
-class Config(dict):  # type: ignore[type-arg]
-    """Works exactly like a dict but provides ways to fill it from files
-    or special dictionaries.  There are two common patterns to populate the
-    config.
+@keras_export(["keras.config.floatx", "keras.backend.floatx"])
+def floatx():
+    """Return the default float type, as a string.
 
-    Either you can fill the config from a config file::
+    E.g. `'bfloat16'`, `'float16'`, `'float32'`, `'float64'`.
 
-        app.config.from_pyfile('yourconfig.cfg')
+    Returns:
+        String, the current default float type.
 
-    Or alternatively you can define the configuration options in the
-    module that calls :meth:`from_object` or provide an import path to
-    a module that should be loaded.  It is also possible to tell it to
-    use the same module and with that provide the configuration values
-    just before the call::
+    Example:
 
-        DEBUG = True
-        SECRET_KEY = 'development key'
-        app.config.from_object(__name__)
+    >>> keras.config.floatx()
+    'float32'
 
-    In both cases (loading from any Python file or loading from modules),
-    only uppercase keys are added to the config.  This makes it possible to use
-    lowercase values in the config file for temporary values that are not added
-    to the config or to define the config keys in the same file that implements
-    the application.
-
-    Probably the most interesting way to load configurations is from an
-    environment variable pointing to a file::
-
-        app.config.from_envvar('YOURAPPLICATION_SETTINGS')
-
-    In this case before launching the application you have to set this
-    environment variable to the file you want to use.  On Linux and OS X
-    use the export statement::
-
-        export YOURAPPLICATION_SETTINGS='/path/to/config/file'
-
-    On windows use `set` instead.
-
-    :param root_path: path to which files are read relative from.  When the
-                      config object is created by the application, this is
-                      the application's :attr:`~flask.Flask.root_path`.
-    :param defaults: an optional dictionary of default values
     """
+    return _FLOATX
 
-    def __init__(
-        self,
-        root_path: str | os.PathLike[str],
-        defaults: dict[str, t.Any] | None = None,
-    ) -> None:
-        super().__init__(defaults or {})
-        self.root_path = root_path
 
-    def from_envvar(self, variable_name: str, silent: bool = False) -> bool:
-        """Loads a configuration from an environment variable pointing to
-        a configuration file.  This is basically just a shortcut with nicer
-        error messages for this line of code::
+@keras_export(["keras.config.set_floatx", "keras.backend.set_floatx"])
+def set_floatx(value):
+    """Set the default float dtype.
 
-            app.config.from_pyfile(os.environ['YOURAPPLICATION_SETTINGS'])
+    Note: It is not recommended to set this to `"float16"` for training,
+    as this will likely cause numeric stability issues.
+    Instead, mixed precision, which leverages
+    a mix of `float16` and `float32`. It can be configured by calling
+    `keras.mixed_precision.set_dtype_policy('mixed_float16')`.
 
-        :param variable_name: name of the environment variable
-        :param silent: set to ``True`` if you want silent failure for missing
-                       files.
-        :return: ``True`` if the file was loaded successfully.
-        """
-        rv = os.environ.get(variable_name)
-        if not rv:
-            if silent:
-                return False
-            raise RuntimeError(
-                f"The environment variable {variable_name!r} is not set"
-                " and as such configuration could not be loaded. Set"
-                " this variable and make it point to a configuration"
-                " file"
+    Args:
+        value: String; `'bfloat16'`, `'float16'`, `'float32'`, or `'float64'`.
+
+    Examples:
+    >>> keras.config.floatx()
+    'float32'
+
+    >>> keras.config.set_floatx('float64')
+    >>> keras.config.floatx()
+    'float64'
+
+    >>> # Set it back to float32
+    >>> keras.config.set_floatx('float32')
+
+    Raises:
+        ValueError: In case of invalid value.
+    """
+    global _FLOATX
+    accepted_dtypes = {"bfloat16", "float16", "float32", "float64"}
+    if value not in accepted_dtypes:
+        raise ValueError(
+            f"Unknown `floatx` value: {value}. "
+            f"Expected one of {accepted_dtypes}"
+        )
+    _FLOATX = str(value)
+
+
+@keras_export(["keras.config.epsilon", "keras.backend.epsilon"])
+def epsilon():
+    """Return the value of the fuzz factor used in numeric expressions.
+
+    Returns:
+        A float.
+
+    Example:
+
+    >>> keras.config.epsilon()
+    1e-07
+
+    """
+    return _EPSILON
+
+
+@keras_export(["keras.config.set_epsilon", "keras.backend.set_epsilon"])
+def set_epsilon(value):
+    """Set the value of the fuzz factor used in numeric expressions.
+
+    Args:
+        value: float. New value of epsilon.
+
+    Examples:
+    >>> keras.config.epsilon()
+    1e-07
+
+    >>> keras.config.set_epsilon(1e-5)
+    >>> keras.config.epsilon()
+    1e-05
+
+    >>> # Set it back to the default value.
+    >>> keras.config.set_epsilon(1e-7)
+
+    """
+    global _EPSILON
+    _EPSILON = value
+
+
+@keras_export(
+    [
+        "keras.config.image_data_format",
+        "keras.backend.image_data_format",
+    ]
+)
+def image_data_format():
+    """Return the default image data format convention.
+
+    Returns:
+        A string, either `'channels_first'` or `'channels_last'`.
+
+    Example:
+
+    >>> keras.config.image_data_format()
+    'channels_last'
+
+    """
+    return _IMAGE_DATA_FORMAT
+
+
+@keras_export(
+    [
+        "keras.config.set_image_data_format",
+        "keras.backend.set_image_data_format",
+    ]
+)
+def set_image_data_format(data_format):
+    """Set the value of the image data format convention.
+
+    Args:
+        data_format: string. `'channels_first'` or `'channels_last'`.
+
+    Examples:
+
+    >>> keras.config.image_data_format()
+    'channels_last'
+
+    >>> keras.config.set_image_data_format('channels_first')
+    >>> keras.config.image_data_format()
+    'channels_first'
+
+    >>> # Set it back to `'channels_last'`
+    >>> keras.config.set_image_data_format('channels_last')
+
+    """
+    global _IMAGE_DATA_FORMAT
+    data_format = str(data_format).lower()
+    if data_format not in {"channels_first", "channels_last"}:
+        raise ValueError(
+            "The `data_format` argument must be one of "
+            "{'channels_first', 'channels_last'}. "
+            f"Received: data_format={data_format}"
+        )
+    _IMAGE_DATA_FORMAT = data_format
+
+
+@keras_export("keras.config.enable_flash_attention")
+def enable_flash_attention():
+    """Enable flash attention.
+
+    Flash attention offers performance optimization for attention layers,
+    making it especially useful for large language models (LLMs) that
+    benefit from faster and more memory-efficient attention computations.
+
+    Once enabled, supported layers like `MultiHeadAttention` will **attempt** to
+    use flash attention for faster computations. By default, this feature is
+    enabled.
+
+    Note that enabling flash attention does not guarantee it will always be
+    used. Typically, the inputs must be in `float16` or `bfloat16` dtype, and
+    input layout requirements may vary depending on the backend.
+    """
+    from keras.src.backend.common import global_state
+
+    global_state.set_global_attribute("flash_attention", None)
+
+
+@keras_export("keras.config.disable_flash_attention")
+def disable_flash_attention():
+    """Disable flash attention.
+
+    Flash attention offers performance optimization for attention layers,
+    making it especially useful for large language models (LLMs) that
+    benefit from faster and more memory-efficient attention computations.
+
+    Once disabled, supported layers like `MultiHeadAttention` will not
+    use flash attention for faster computations.
+    """
+    from keras.src.backend.common import global_state
+
+    global_state.set_global_attribute("flash_attention", False)
+
+
+@keras_export("keras.config.is_flash_attention_enabled")
+def is_flash_attention_enabled():
+    """Checks whether flash attention is globally enabled in Keras.
+
+    Flash attention is a performance-optimized method for computing attention
+    in large models, such as transformers, allowing for faster and more
+    memory-efficient operations. This function checks the global Keras
+    configuration to determine if flash attention is enabled for compatible
+    layers (e.g., `MultiHeadAttention`).
+
+    Note that enabling flash attention does not guarantee it will always be
+    used. Typically, the inputs must be in `float16` or `bfloat16` dtype, and
+    input layout requirements may vary depending on the backend.
+
+    Returns:
+        `False` if disabled; otherwise, it indicates that it is enabled.
+    """
+    from keras.src.backend.common import global_state
+
+    return global_state.get_global_attribute("flash_attention", default=None)
+
+
+@keras_export("keras.config.is_nnx_enabled")
+def is_nnx_enabled():
+    """Checks whether NNX specific features are enabled for the JAX backend.
+
+    Returns:
+        bool: `True` if NNX backend features are enabled, `False` otherwise.
+        Defaults to `False`.
+    """
+    return _NNX_ENABLED
+
+
+def set_nnx_enabled(value):
+    global _NNX_ENABLED
+    from keras.src.backend.common import global_state
+
+    _NNX_ENABLED = bool(value)
+    if _NNX_ENABLED:
+        try:
+            from flax import nnx  # noqa F401
+        except ImportError:
+            raise ImportError(
+                "To use NNX with the JAX backend, you must install `flax`."
             )
-        return self.from_pyfile(rv, silent=silent)
+    global_state.set_global_attribute("nnx_enabled", bool(value))
 
-    def from_prefixed_env(
-        self, prefix: str = "FLASK", *, loads: t.Callable[[str], t.Any] = json.loads
-    ) -> bool:
-        """Load any environment variables that start with ``FLASK_``,
-        dropping the prefix from the env key for the config key. Values
-        are passed through a loading function to attempt to convert them
-        to more specific types than strings.
 
-        Keys are loaded in :func:`sorted` order.
+def standardize_data_format(data_format):
+    if data_format is None:
+        return image_data_format()
+    data_format = str(data_format).lower()
+    if data_format not in {"channels_first", "channels_last"}:
+        raise ValueError(
+            "The `data_format` argument must be one of "
+            "{'channels_first', 'channels_last'}. "
+            f"Received: data_format={data_format}"
+        )
+    return data_format
 
-        The default loading function attempts to parse values as any
-        valid JSON type, including dicts and lists.
 
-        Specific items in nested dicts can be set by separating the
-        keys with double underscores (``__``). If an intermediate key
-        doesn't exist, it will be initialized to an empty dict.
+# Set Keras base dir path given KERAS_HOME env variable, if applicable.
+# Otherwise either ~/.keras or /tmp.
+if "KERAS_HOME" in os.environ:
+    _KERAS_DIR = os.environ.get("KERAS_HOME")
+else:
+    _keras_base_dir = os.path.expanduser("~")
+    if not os.access(_keras_base_dir, os.W_OK):
+        _keras_base_dir = "/tmp"
+    _KERAS_DIR = os.path.join(_keras_base_dir, ".keras")
 
-        :param prefix: Load env vars that start with this prefix,
-            separated with an underscore (``_``).
-        :param loads: Pass each string value to this function and use
-            the returned value as the config value. If any error is
-            raised it is ignored and the value remains a string. The
-            default is :func:`json.loads`.
 
-        .. versionadded:: 2.1
-        """
-        prefix = f"{prefix}_"
+def keras_home():
+    # Private accessor for the keras home location.
+    return _KERAS_DIR
 
-        for key in sorted(os.environ):
-            if not key.startswith(prefix):
-                continue
 
-            value = os.environ[key]
-            key = key.removeprefix(prefix)
+# Attempt to read Keras config file.
+_config_path = os.path.expanduser(os.path.join(_KERAS_DIR, "keras.json"))
+if os.path.exists(_config_path):
+    try:
+        with open(_config_path) as f:
+            _config = json.load(f)
+    except ValueError:
+        _config = {}
+    _floatx = _config.get("floatx", floatx())
+    if _floatx not in {"float16", "float32", "float64"}:
+        raise ValueError(
+            "Invalid `floatx` configuration. "
+            "Expected one of {'float16', 'float32', 'float64'}. "
+            f"Received: floatx={_floatx}"
+        )
+    _epsilon = _config.get("epsilon", epsilon())
+    if not isinstance(_epsilon, float):
+        raise ValueError(
+            "Invalid `epsilon` configuration. "
+            "Expected a float. "
+            f"Received: epsilon={_epsilon}"
+        )
+    _backend = _config.get("backend", _BACKEND)
+    _image_data_format = _config.get("image_data_format", image_data_format())
+    if _image_data_format not in {"channels_last", "channels_first"}:
+        raise ValueError(
+            "Invalid `image_data_format` configuration. "
+            "Expected one of {'channels_last', 'channels_first'}. "
+            f"Received: image_data_format={_image_data_format}"
+        )
+    _nnx_enabled_config = _config.get("nnx_enabled", _NNX_ENABLED)
 
-            try:
-                value = loads(value)
-            except Exception:
-                # Keep the value as a string if loading failed.
-                pass
+    # Apply basic configs that don't cause circular import
+    set_floatx(_floatx)
+    _NNX_ENABLED = _nnx_enabled_config
+    set_epsilon(_epsilon)
+    set_image_data_format(_image_data_format)
+    _BACKEND = _backend
 
-            if "__" not in key:
-                # A non-nested key, set directly.
-                self[key] = value
-                continue
+# Save config file, if possible.
+if not os.path.exists(_KERAS_DIR):
+    try:
+        os.makedirs(_KERAS_DIR)
+    except OSError:
+        # Except permission denied and potential race conditions
+        # in multi-threaded environments.
+        pass
 
-            # Traverse nested dictionaries with keys separated by "__".
-            current = self
-            *parts, tail = key.split("__")
+if not os.path.exists(_config_path):
+    _config = {
+        "floatx": floatx(),
+        "epsilon": epsilon(),
+        "backend": _BACKEND,
+        "image_data_format": image_data_format(),
+    }
+    try:
+        with open(_config_path, "w") as f:
+            f.write(json.dumps(_config, indent=4))
+    except IOError:
+        # Except permission denied.
+        pass
 
-            for part in parts:
-                # If an intermediate dict does not exist, create it.
-                if part not in current:
-                    current[part] = {}
+# Set backend based on KERAS_BACKEND flag, if applicable.
+if "KERAS_BACKEND" in os.environ:
+    _backend = os.environ["KERAS_BACKEND"]
+    if _backend:
+        _BACKEND = _backend
+if "KERAS_MAX_EPOCHS" in os.environ:
+    _MAX_EPOCHS = int(os.environ["KERAS_MAX_EPOCHS"])
+if "KERAS_MAX_STEPS_PER_EPOCH" in os.environ:
+    _MAX_STEPS_PER_EPOCH = int(os.environ["KERAS_MAX_STEPS_PER_EPOCH"])
 
-                current = current[part]
 
-            current[tail] = value
+if _BACKEND != "tensorflow":
+    # If we are not running on the tensorflow backend, we should stop tensorflow
+    # from using all available GPU memory. See
+    # https://www.tensorflow.org/guide/gpu#limiting_gpu_memory_growth
+    os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
-        return True
 
-    def from_pyfile(
-        self, filename: str | os.PathLike[str], silent: bool = False
-    ) -> bool:
-        """Updates the values in the config from a Python file.  This function
-        behaves as if the file was imported as module with the
-        :meth:`from_object` function.
+@keras_export(
+    [
+        "keras.config.backend",
+        "keras.backend.backend",
+    ]
+)
+def backend():
+    """Publicly accessible method for determining the current backend.
 
-        :param filename: the filename of the config.  This can either be an
-                         absolute filename or a filename relative to the
-                         root path.
-        :param silent: set to ``True`` if you want silent failure for missing
-                       files.
-        :return: ``True`` if the file was loaded successfully.
+    Returns:
+        String, the name of the backend Keras is currently using. One of
+            `"tensorflow"`, `"torch"`, or `"jax"`.
 
-        .. versionadded:: 0.7
-           `silent` parameter.
-        """
-        filename = os.path.join(self.root_path, filename)
-        d = types.ModuleType("config")
-        d.__file__ = filename
-        try:
-            with open(filename, mode="rb") as config_file:
-                exec(compile(config_file.read(), filename, "exec"), d.__dict__)
-        except OSError as e:
-            if silent and e.errno in (errno.ENOENT, errno.EISDIR, errno.ENOTDIR):
-                return False
-            e.strerror = f"Unable to load configuration file ({e.strerror})"
-            raise
-        self.from_object(d)
-        return True
+    Example:
 
-    def from_object(self, obj: object | str) -> None:
-        """Updates the values from the given object.  An object can be of one
-        of the following two types:
+    >>> keras.config.backend()
+    'tensorflow'
 
-        -   a string: in this case the object with that name will be imported
-        -   an actual object reference: that object is used directly
+    """
+    return _BACKEND
 
-        Objects are usually either modules or classes. :meth:`from_object`
-        loads only the uppercase attributes of the module/class. A ``dict``
-        object will not work with :meth:`from_object` because the keys of a
-        ``dict`` are not attributes of the ``dict`` class.
 
-        Example of module-based configuration::
+@keras_export(["keras.config.set_max_epochs"])
+def set_max_epochs(max_epochs):
+    """Limit the maximum number of epochs for any call to fit.
 
-            app.config.from_object('yourapplication.default_config')
-            from yourapplication import default_config
-            app.config.from_object(default_config)
+    This will cap the number of epochs for any training run using `model.fit()`.
+    This is purely for debugging, and can also be set via the `KERAS_MAX_EPOCHS`
+    environment variable to quickly run a script without modifying its source.
 
-        Nothing is done to the object before loading. If the object is a
-        class and has ``@property`` attributes, it needs to be
-        instantiated before being passed to this method.
+    Args:
+        max_epochs: The integer limit on the number of epochs or `None`. If
+            `None`, no limit is applied.
+    """
+    global _MAX_EPOCHS
+    _MAX_EPOCHS = max_epochs
 
-        You should not use this function to load the actual configuration but
-        rather configuration defaults.  The actual config should be loaded
-        with :meth:`from_pyfile` and ideally from a location not within the
-        package because the package might be installed system wide.
 
-        See :ref:`config-dev-prod` for an example of class-based configuration
-        using :meth:`from_object`.
+@keras_export(["keras.config.set_max_steps_per_epoch"])
+def set_max_steps_per_epoch(max_steps_per_epoch):
+    """Limit the maximum number of steps for any call to fit/evaluate/predict.
 
-        :param obj: an import name or object
-        """
-        if isinstance(obj, str):
-            obj = import_string(obj)
-        for key in dir(obj):
-            if key.isupper():
-                self[key] = getattr(obj, key)
+    This will cap the number of steps for single epoch of a call to `fit()`,
+    `evaluate()`, or `predict()`. This is purely for debugging, and can also be
+    set via the `KERAS_MAX_STEPS_PER_EPOCH` environment variable to quickly run
+    a scrip without modifying its source.
 
-    def from_file(
-        self,
-        filename: str | os.PathLike[str],
-        load: t.Callable[[t.IO[t.Any]], t.Mapping[str, t.Any]],
-        silent: bool = False,
-        text: bool = True,
-    ) -> bool:
-        """Update the values in the config from a file that is loaded
-        using the ``load`` parameter. The loaded data is passed to the
-        :meth:`from_mapping` method.
+    Args:
+        max_epochs: The integer limit on the number of epochs or `None`. If
+            `None`, no limit is applied.
+    """
+    global _MAX_STEPS_PER_EPOCH
+    _MAX_STEPS_PER_EPOCH = max_steps_per_epoch
 
-        .. code-block:: python
 
-            import json
-            app.config.from_file("config.json", load=json.load)
+@keras_export(["keras.config.max_epochs"])
+def max_epochs():
+    """Get the maximum number of epochs for any call to fit.
 
-            import tomllib
-            app.config.from_file("config.toml", load=tomllib.load, text=False)
+    Retrieves the limit on the number of epochs set by
+    `keras.config.set_max_epochs` or the `KERAS_MAX_EPOCHS` environment
+    variable.
 
-        :param filename: The path to the data file. This can be an
-            absolute path or relative to the config root path.
-        :param load: A callable that takes a file handle and returns a
-            mapping of loaded data from the file.
-        :type load: ``Callable[[Reader], Mapping]`` where ``Reader``
-            implements a ``read`` method.
-        :param silent: Ignore the file if it doesn't exist.
-        :param text: Open the file in text or binary mode.
-        :return: ``True`` if the file was loaded successfully.
+    Returns:
+        The integer limit on the number of epochs or `None`, if no limit has
+        been set.
+    """
+    return _MAX_EPOCHS
 
-        .. versionchanged:: 2.3
-            The ``text`` parameter was added.
 
-        .. versionadded:: 2.0
-        """
-        filename = os.path.join(self.root_path, filename)
+@keras_export(["keras.config.max_steps_per_epoch"])
+def max_steps_per_epoch():
+    """Get the maximum number of steps for any call to fit/evaluate/predict.
 
-        try:
-            with open(filename, "r" if text else "rb") as f:
-                obj = load(f)
-        except OSError as e:
-            if silent and e.errno in (errno.ENOENT, errno.EISDIR):
-                return False
+    Retrieves the limit on the number of epochs set by
+    `keras.config.set_max_steps_per_epoch` or the `KERAS_MAX_STEPS_PER_EPOCH`
+    environment variable.
 
-            e.strerror = f"Unable to load configuration file ({e.strerror})"
-            raise
+    Args:
+        max_epochs: The integer limit on the number of epochs or `None`. If
+            `None`, no limit is applied.
+    """
+    return _MAX_STEPS_PER_EPOCH
 
-        return self.from_mapping(obj)
 
-    def from_mapping(
-        self, mapping: t.Mapping[str, t.Any] | None = None, **kwargs: t.Any
-    ) -> bool:
-        """Updates the config like :meth:`update` ignoring items with
-        non-upper keys.
+if "KERAS_NNX_ENABLED" in os.environ:
+    env_val = os.environ["KERAS_NNX_ENABLED"].lower()
+    if env_val == "true" or env_val == "1":
+        _NNX_ENABLED = True
+    else:
+        _NNX_ENABLED = False
 
-        :return: Always returns ``True``.
-
-        .. versionadded:: 0.11
-        """
-        mappings: dict[str, t.Any] = {}
-        if mapping is not None:
-            mappings.update(mapping)
-        mappings.update(kwargs)
-        for key, value in mappings.items():
-            if key.isupper():
-                self[key] = value
-        return True
-
-    def get_namespace(
-        self, namespace: str, lowercase: bool = True, trim_namespace: bool = True
-    ) -> dict[str, t.Any]:
-        """Returns a dictionary containing a subset of configuration options
-        that match the specified namespace/prefix. Example usage::
-
-            app.config['IMAGE_STORE_TYPE'] = 'fs'
-            app.config['IMAGE_STORE_PATH'] = '/var/app/images'
-            app.config['IMAGE_STORE_BASE_URL'] = 'http://img.website.com'
-            image_store_config = app.config.get_namespace('IMAGE_STORE_')
-
-        The resulting dictionary `image_store_config` would look like::
-
-            {
-                'type': 'fs',
-                'path': '/var/app/images',
-                'base_url': 'http://img.website.com'
-            }
-
-        This is often useful when configuration options map directly to
-        keyword arguments in functions or class constructors.
-
-        :param namespace: a configuration namespace
-        :param lowercase: a flag indicating if the keys of the resulting
-                          dictionary should be lowercase
-        :param trim_namespace: a flag indicating if the keys of the resulting
-                          dictionary should not include the namespace
-
-        .. versionadded:: 0.11
-        """
-        rv = {}
-        for k, v in self.items():
-            if not k.startswith(namespace):
-                continue
-            if trim_namespace:
-                key = k[len(namespace) :]
-            else:
-                key = k
-            if lowercase:
-                key = key.lower()
-            rv[key] = v
-        return rv
-
-    def __repr__(self) -> str:
-        return f"<{type(self).__name__} {dict.__repr__(self)}>"
+set_nnx_enabled(_NNX_ENABLED)

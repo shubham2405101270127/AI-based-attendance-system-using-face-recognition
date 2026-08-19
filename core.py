@@ -1,648 +1,772 @@
-import bisect
-import re
-import unicodedata
-import warnings
-from typing import Optional, Union
+import builtins
+import contextlib
+import functools
+import os
 
-from . import idnadata
-from .intranges import intranges_contain
+import ml_dtypes
+import numpy as np
+import torch
 
-_virama_combining_class = 9
-_alabel_prefix = b"xn--"
-_max_input_length = 1024
-_unicode_dots_re = re.compile("[\u002e\u3002\uff0e\uff61]")
+from keras.src import tree
+from keras.src.backend.common import KerasVariable
+from keras.src.backend.common import global_state
+from keras.src.backend.common import standardize_dtype
+from keras.src.backend.common.backend_utils import slice_along_axis
+from keras.src.backend.common.dtypes import result_type
+from keras.src.backend.common.keras_tensor import KerasTensor
+from keras.src.backend.common.stateless_scope import StatelessScope
+from keras.src.backend.common.stateless_scope import get_stateless_scope
+from keras.src.backend.common.stateless_scope import in_stateless_scope
+from keras.src.backend.common.symbolic_scope import SymbolicScope
+from keras.src.backend.config import floatx
 
+SUPPORTS_SPARSE_TENSORS = False
+SUPPORTS_RAGGED_TENSORS = False
+IS_THREAD_SAFE = True
 
-# Bidi category sets from RFC 5893, hoisted out of the per-codepoint loop
-_bidi_rtl_first = frozenset({"R", "AL"})
-_bidi_rtl_categories = frozenset({"R", "AL", "AN"})
-_bidi_rtl_allowed = frozenset({"R", "AL", "AN", "EN", "ES", "CS", "ET", "ON", "BN", "NSM"})
-_bidi_rtl_valid_ending = frozenset({"R", "AL", "EN", "AN"})
-_bidi_rtl_numeric = frozenset({"AN", "EN"})
-_bidi_ltr_allowed = frozenset({"L", "EN", "ES", "CS", "ET", "ON", "BN", "NSM"})
-_bidi_ltr_valid_ending = frozenset({"L", "EN"})
-_bidi_joiner_l_or_d = frozenset({"L", "D"})
-_bidi_joiner_r_or_d = frozenset({"R", "D"})
+# Some operators such as 'aten::_foreach_mul_.Scalar'
+# are not currently implemented for the MPS device.
+# check https://github.com/pytorch/pytorch/issues/77764.
+if "KERAS_TORCH_DEVICE" in os.environ:
+    DEFAULT_DEVICE = os.environ["KERAS_TORCH_DEVICE"]
+elif torch.backends.mps.is_available():
+    DEFAULT_DEVICE = "mps"
+elif torch.cuda.is_available():
+    DEFAULT_DEVICE = "cuda"
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    DEFAULT_DEVICE = "xpu"
+else:
+    DEFAULT_DEVICE = "cpu"
 
-
-def _joining_type(cp: int) -> Optional[str]:
-    for jt, ranges in idnadata.joining_types.items():
-        if intranges_contain(cp, ranges):
-            return jt
-    return None
-
-
-class IDNAError(UnicodeError):
-    """Base exception for all IDNA-encoding related problems"""
-
-
-class IDNABidiError(IDNAError):
-    """Exception when bidirectional requirements are not satisfied"""
-
-
-class InvalidCodepoint(IDNAError):
-    """Exception when a disallowed or unallocated codepoint is used"""
-
-
-class InvalidCodepointContext(IDNAError):
-    """Exception when the codepoint is not valid in the context it is used"""
-
-
-def _combining_class(cp: int) -> int:
-    v = unicodedata.combining(chr(cp))
-    if v == 0 and not unicodedata.name(chr(cp)):
-        raise ValueError("Unknown character in unicodedata")
-    return v
-
-
-def _is_script(cp: str, script: str) -> bool:
-    return intranges_contain(ord(cp), idnadata.scripts[script])
-
-
-def _punycode(s: str) -> bytes:
-    return s.encode("punycode")
+TORCH_DTYPES = {
+    "float16": torch.float16,
+    "float32": torch.float32,
+    "float64": torch.float64,
+    "uint8": torch.uint8,
+    "uint16": torch.int32,  # TODO: Torch doesn't have `uint16` dtype.
+    "uint32": torch.int64,  # TODO: Torch doesn't have `uint32` dtype.
+    "int8": torch.int8,
+    "int16": torch.int16,
+    "int32": torch.int32,
+    "int64": torch.int64,
+    "bfloat16": torch.bfloat16,
+    "bool": torch.bool,
+    "float8_e4m3fn": torch.float8_e4m3fn,
+    "float8_e5m2": torch.float8_e5m2,
+    "complex32": torch.complex32,
+    "complex64": torch.complex64,
+    "complex128": torch.complex128,
+}
 
 
-def _unot(s: int) -> str:
-    return f"U+{s:04X}"
+@contextlib.contextmanager
+def device_scope(device_name):
+    previous_device = global_state.get_global_attribute("torch_device", None)
+    current_device = _parse_device_input(device_name)
+    global_state.set_global_attribute("torch_device", current_device)
+    try:
+        yield torch.device(current_device)
+    finally:
+        global_state.set_global_attribute("torch_device", previous_device)
 
 
-def valid_label_length(label: Union[bytes, str]) -> bool:
-    """Check that a label does not exceed the maximum permitted length.
-
-    Per :rfc:`1035` (and :rfc:`5891` §4.2.4) a DNS label must not exceed
-    63 octets. The argument may be either a :class:`str` (a U-label, where
-    length is measured in characters) or :class:`bytes` (an A-label, where
-    length is measured in octets).
-
-    :param label: The label to check.
-    :returns: ``True`` if the label is within the length limit, otherwise
-        ``False``.
-    """
-    return len(label) <= 63
+def get_device():
+    device = global_state.get_global_attribute("torch_device", None)
+    if device is None:
+        return DEFAULT_DEVICE
+    return device
 
 
-def valid_string_length(domain: Union[bytes, str], trailing_dot: bool) -> bool:
-    """Check that a full domain name does not exceed the maximum length.
-
-    Per :rfc:`1035`, a domain name is limited to 253 octets when no trailing
-    dot is present, or 254 octets when one is included.
-
-    :param domain: The full (possibly multi-label) domain name.
-    :param trailing_dot: ``True`` if ``domain`` includes a trailing ``.``.
-    :returns: ``True`` if the domain is within the length limit, otherwise
-        ``False``.
-    """
-    return len(domain) <= (254 if trailing_dot else 253)
-
-
-def check_bidi(label: str, check_ltr: bool = False) -> bool:
-    """Validate the Bidi Rule from :rfc:`5893` for a single label.
-
-    The Bidi Rule constrains how bidirectional characters (Hebrew, Arabic,
-    etc.) may appear within a label. By default the check is only applied
-    when the label contains at least one right-to-left character (Unicode
-    bidirectional categories ``R``, ``AL``, or ``AN``); set ``check_ltr``
-    to ``True`` to apply it to LTR-only labels as well.
-
-    :param label: The label to validate, as a Unicode string.
-    :param check_ltr: If ``True``, apply the rules even when the label
-        contains no RTL characters.
-    :returns: ``True`` if the label satisfies the Bidi Rule.
-    :raises IDNABidiError: If any of Bidi Rule conditions 1-6 are violated,
-        or if the directional category of a codepoint cannot be determined.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    # Bidi rules should only be applied if string contains RTL characters
-    bidi_label = False
-    for idx, cp in enumerate(label, 1):
-        direction = unicodedata.bidirectional(cp)
-        if direction == "":
-            # String likely comes from a newer version of Unicode
-            raise IDNABidiError(f"Unknown directionality in label {label!r} at position {idx}")
-        if direction in _bidi_rtl_categories:
-            bidi_label = True
-    if not bidi_label and not check_ltr:
-        return True
-
-    # Bidi rule 1
-    direction = unicodedata.bidirectional(label[0])
-    if direction in _bidi_rtl_first:
-        rtl = True
-    elif direction == "L":
-        rtl = False
+def _parse_device_input(device_name):
+    if isinstance(device_name, str):
+        # We support string value like "cpu:0", "gpu:1", and need to convert
+        # "gpu" to "cuda"
+        device_name = device_name.lower()
+        if "gpu" in device_name:
+            device_name = device_name.replace("gpu", "cuda")
     else:
-        raise IDNABidiError(f"First codepoint in label {label!r} must be directionality L, R or AL")
+        raise ValueError(
+            "Invalid value for argument `device_name`. "
+            "Expected a string like 'gpu:0' or 'cpu'. "
+            f"Received: device_name='{device_name}'"
+        )
+    # The torch.Device instance can be used directly.
+    return device_name
 
-    valid_ending = False
-    number_type: Optional[str] = None
-    for idx, cp in enumerate(label, 1):
-        direction = unicodedata.bidirectional(cp)
 
-        if rtl:
-            # Bidi rule 2
-            if direction not in _bidi_rtl_allowed:
-                raise IDNABidiError(f"Invalid direction for codepoint at position {idx} in a right-to-left label")
-            # Bidi rule 3
-            if direction in _bidi_rtl_valid_ending:
-                valid_ending = True
-            elif direction != "NSM":
-                valid_ending = False
-            # Bidi rule 4
-            if direction in _bidi_rtl_numeric:
-                if not number_type:
-                    number_type = direction
-                elif number_type != direction:
-                    raise IDNABidiError("Can not mix numeral types in a right-to-left label")
+def to_torch_dtype(dtype):
+    standardized_dtype = TORCH_DTYPES.get(standardize_dtype(dtype), None)
+    if standardized_dtype is None:
+        raise ValueError(f"Unsupported dtype for PyTorch: {dtype}")
+    return standardized_dtype
+
+
+class Variable(KerasVariable):
+    def _initialize(self, value):
+        if isinstance(value, torch.nn.Parameter):
+            # Reuse same parameter
+            self._value = value
         else:
-            # Bidi rule 5
-            if direction not in _bidi_ltr_allowed:
-                raise IDNABidiError(f"Invalid direction for codepoint at position {idx} in a left-to-right label")
-            # Bidi rule 6
-            if direction in _bidi_ltr_valid_ending:
-                valid_ending = True
-            elif direction != "NSM":
-                valid_ending = False
+            self._value = torch.nn.Parameter(
+                convert_to_tensor(value, dtype=self._dtype),
+                requires_grad=self.trainable,
+            ).to(get_device())
 
-    if not valid_ending:
-        raise IDNABidiError("Label ends with illegal codepoint directionality")
+    def _direct_assign(self, value):
+        with torch.no_grad():
+            self.value.copy_(value)
 
-    return True
+    def _convert_to_tensor(self, value, dtype=None):
+        return convert_to_tensor(value, dtype=dtype)
 
+    # Overload native accessor.
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        args = [arg.value if isinstance(arg, Variable) else arg for arg in args]
+        if kwargs is None:
+            kwargs = {}
+        kwargs = {
+            key: value.value if isinstance(value, Variable) else value
+            for key, value in kwargs.items()
+        }
+        return func(*args, **kwargs)
 
-def check_initial_combiner(label: str) -> bool:
-    """Reject labels that begin with a combining mark.
+    def __array__(self, dtype=None):
+        value = convert_to_numpy(self.value)
+        if dtype:
+            return value.astype(dtype)
+        return value
 
-    Per :rfc:`5891` §4.2.3.2 a label must not start with a character of
-    Unicode general category ``M`` (Mark).
+    @property
+    def value(self):
+        # We cannot chain super() here because it will fail TorchDynamo. The
+        # reason why is unclear.
+        def maybe_use_symbolic_tensor(value):
+            # Create and use a symbolic tensor stub in symbolic calls.
+            if str(get_device()) == "meta" and str(value.device) != "meta":
+                return torch.nn.Parameter(
+                    torch.empty(
+                        size=self._shape,
+                        dtype=to_torch_dtype(self._dtype),
+                        device="meta",
+                    ),
+                    requires_grad=self.trainable,
+                )
+            return value
 
-    :param label: The label to check.
-    :returns: ``True`` if the first character is not a combining mark.
-    :raises IDNAError: If the label begins with a combining character.
-    """
-    if unicodedata.category(label[0])[0] == "M":
-        raise IDNAError("Label begins with an illegal combining character")
-    return True
+        if in_stateless_scope():
+            scope = get_stateless_scope()
+            value = scope.get_current_value(self)
+            if value is not None:
+                value = self._maybe_autocast(value)
+                return maybe_use_symbolic_tensor(value)
+        if self._value is None:
+            # Uninitialized variable. Return a placeholder.
+            # This is fine because it's only ever used
+            # in during shape inference / graph tracing
+            # (anything else would be a bug, to be fixed.)
+            value = self._maybe_autocast(
+                self._initializer(self._shape, dtype=self._dtype)
+            )
+        else:
+            value = self._maybe_autocast(self._value)
+        return maybe_use_symbolic_tensor(value)
 
+    @property
+    def trainable(self):
+        return self._trainable
 
-def check_hyphen_ok(label: str) -> bool:
-    """Validate the hyphen restrictions for a label.
+    @trainable.setter
+    def trainable(self, value):
+        self._trainable = value
+        if self._value is not None:
+            self._value.requires_grad = value
 
-    Per :rfc:`5891` §4.2.3.1 a label must not start or end with a hyphen
-    (``U+002D``), and must not have hyphens in both the third and fourth
-    positions (the prefix reserved for A-labels).
-
-    :param label: The label to check.
-    :returns: ``True`` if the hyphen restrictions are satisfied.
-    :raises IDNAError: If any of the hyphen restrictions are violated.
-    """
-    if label[2:4] == "--":
-        raise IDNAError("Label has disallowed hyphens in 3rd and 4th position")
-    if label[0] == "-" or label[-1] == "-":
-        raise IDNAError("Label must not start or end with a hyphen")
-    return True
-
-
-def check_nfc(label: str) -> None:
-    """Require that a label is in Unicode Normalization Form C.
-
-    :param label: The label to check.
-    :raises IDNAError: If ``label`` differs from its NFC normalisation.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    if unicodedata.normalize("NFC", label) != label:
-        raise IDNAError("Label must be in Normalization Form C")
-
-
-def valid_contextj(label: str, pos: int) -> bool:
-    """Validate the CONTEXTJ rules from :rfc:`5892` Appendix A.
-
-    These rules govern the contextual use of the joiner codepoints
-    ``U+200C`` (ZERO WIDTH NON-JOINER, Appendix A.1) and ``U+200D``
-    (ZERO WIDTH JOINER, Appendix A.2) within a label.
-
-    :param label: The label containing the codepoint.
-    :param pos: Index of the joiner codepoint within ``label``.
-    :returns: ``True`` if the codepoint at ``pos`` satisfies its CONTEXTJ
-        rule, ``False`` otherwise (including when the codepoint at
-        ``pos`` is not a recognised joiner).
-    :raises ValueError: If an adjacent codepoint has no Unicode name when
-        determining its combining class.
-    :raises IDNAError: If ``label`` exceeds the defensive input length limit.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    cp_value = ord(label[pos])
-
-    if cp_value == 0x200C:
-        if pos > 0 and _combining_class(ord(label[pos - 1])) == _virama_combining_class:
-            return True
-
-        ok = False
-        for i in range(pos - 1, -1, -1):
-            joining_type = _joining_type(ord(label[i]))
-            if joining_type == "T":
-                continue
-            if joining_type in _bidi_joiner_l_or_d:
-                ok = True
-                break
-            break
-
-        if not ok:
+    def __eq__(self, other):
+        try:
+            return super().__eq__(other)
+        except Exception:
             return False
 
-        ok = False
-        for i in range(pos + 1, len(label)):
-            joining_type = _joining_type(ord(label[i]))
-            if joining_type == "T":
-                continue
-            if joining_type in _bidi_joiner_r_or_d:
-                ok = True
-                break
-            break
-        return ok
 
-    if cp_value == 0x200D:
-        return pos > 0 and _combining_class(ord(label[pos - 1])) == _virama_combining_class
-
-    return False
-
-
-def valid_contexto(label: str, pos: int, exception: bool = False) -> bool:
-    """Validate the CONTEXTO rules from :rfc:`5892` Appendix A.
-
-    Covers the contextual rules for codepoints such as MIDDLE DOT
-    (``U+00B7``), Greek lower numeral sign, Hebrew punctuation, Katakana
-    middle dot, and the Arabic-Indic / Extended Arabic-Indic digit ranges.
-
-    :param label: The label containing the codepoint.
-    :param pos: Index of the codepoint within ``label``.
-    :param exception: Reserved for forward compatibility; currently unused.
-    :returns: ``True`` if the codepoint at ``pos`` satisfies its CONTEXTO
-        rule, ``False`` otherwise (including when the codepoint is not a
-        recognised CONTEXTO codepoint).
-    :raises IDNAError: If ``label`` exceeds the defensive input length limit.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    cp_value = ord(label[pos])
-
-    if cp_value == 0x00B7:
-        return 0 < pos < len(label) - 1 and ord(label[pos - 1]) == 0x006C and ord(label[pos + 1]) == 0x006C
-
-    if cp_value == 0x0375:
-        if pos < len(label) - 1 and len(label) > 1:
-            return _is_script(label[pos + 1], "Greek")
-        return False
-
-    if cp_value in {0x05F3, 0x05F4}:
-        if pos > 0:
-            return _is_script(label[pos - 1], "Hebrew")
-        return False
-
-    if cp_value == 0x30FB:
-        for cp in label:
-            if cp == "\u30fb":
-                continue
-            if _is_script(cp, "Hiragana") or _is_script(cp, "Katakana") or _is_script(cp, "Han"):
-                return True
-        return False
-
-    if 0x660 <= cp_value <= 0x669:
-        return not any(0x6F0 <= ord(cp) <= 0x06F9 for cp in label)
-
-    if 0x6F0 <= cp_value <= 0x6F9:
-        return not any(0x660 <= ord(cp) <= 0x0669 for cp in label)
-
-    return False
-
-
-def check_label(label: Union[str, bytes, bytearray]) -> None:
-    """Run the full set of IDNA 2008 validity checks on a single label.
-
-    Applies, in order: NFC normalisation (:func:`check_nfc`), hyphen
-    restrictions (:func:`check_hyphen_ok`), the no-leading-combiner rule
-    (:func:`check_initial_combiner`), per-codepoint validity (PVALID,
-    CONTEXTJ, CONTEXTO classes from :rfc:`5892`), and the Bidi Rule
-    (:func:`check_bidi`).
-
-    :param label: The label to validate. ``bytes`` or ``bytearray`` input
-        is decoded as UTF-8 first.
-    :raises IDNAError: If the label is empty or fails a structural rule.
-    :raises InvalidCodepoint: If the label contains a DISALLOWED or
-        UNASSIGNED codepoint.
-    :raises InvalidCodepointContext: If a CONTEXTJ or CONTEXTO codepoint
-        is not valid in its context.
-    :raises IDNABidiError: If the Bidi Rule is violated.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    if isinstance(label, (bytes, bytearray)):
-        label = label.decode("utf-8")
-    if len(label) == 0:
-        raise IDNAError("Empty Label")
-
-    # Reject on domain length rather than label length so support some UTS 46
-    # use cases, still reducing processing of label contextual rules
-    if not valid_string_length(label, trailing_dot=True):
-        raise IDNAError("Label too long")
-
-    check_nfc(label)
-    check_hyphen_ok(label)
-    check_initial_combiner(label)
-
-    for pos, cp in enumerate(label):
-        cp_value = ord(cp)
-        if intranges_contain(cp_value, idnadata.codepoint_classes["PVALID"]):
-            continue
-        if intranges_contain(cp_value, idnadata.codepoint_classes["CONTEXTJ"]):
-            try:
-                if not valid_contextj(label, pos):
-                    raise InvalidCodepointContext(f"Joiner {_unot(cp_value)} not allowed at position {pos + 1} in {label!r}")
-            except ValueError as err:
-                raise IDNAError(
-                    f"Unknown codepoint adjacent to joiner {_unot(cp_value)} at position {pos + 1} in {label!r}"
-                ) from err
-        elif intranges_contain(cp_value, idnadata.codepoint_classes["CONTEXTO"]):
-            if not valid_contexto(label, pos):
-                raise InvalidCodepointContext(f"Codepoint {_unot(cp_value)} not allowed at position {pos + 1} in {label!r}")
-        else:
-            raise InvalidCodepoint(f"Codepoint {_unot(cp_value)} at position {pos + 1} of {label!r} not allowed")
-
-    check_bidi(label)
-
-
-def alabel(label: str) -> bytes:
-    """Convert a single U-label into its A-label form.
-
-    The result is the ASCII-Compatible Encoding (ACE) form per :rfc:`5891`
-    §4: the label is validated, Punycode-encoded, and prefixed with
-    ``xn--``. Pure ASCII labels that are already valid IDNA labels are
-    returned unchanged (as :class:`bytes`).
-
-    :param label: The label to convert, as a Unicode string.
-    :returns: The A-label as ASCII-encoded :class:`bytes`.
-    :raises IDNAError: If the label is invalid or the resulting A-label
-        exceeds 63 octets.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    try:
-        label_bytes = label.encode("ascii")
-    except UnicodeEncodeError:
-        pass
-    else:
-        ulabel(label_bytes)
-        if not valid_label_length(label_bytes):
-            raise IDNAError("Label too long")
-        return label_bytes
-
-    check_label(label)
-    label_bytes = _alabel_prefix + _punycode(label)
-
-    if not valid_label_length(label_bytes):
-        raise IDNAError("Label too long")
-
-    return label_bytes
-
-
-def ulabel(label: Union[str, bytes, bytearray]) -> str:
-    """Convert a single A-label into its U-label form.
-
-    Performs the inverse of :func:`alabel`: an ``xn--``-prefixed label is
-    Punycode-decoded and validated. Labels that are already Unicode (or
-    plain ASCII without the ACE prefix) are validated and returned as a
-    Unicode string.
-
-    :param label: The label to convert. ``bytes`` or ``bytearray`` input
-        is treated as ASCII.
-    :returns: The U-label as a Unicode string.
-    :raises IDNAError: If the label is malformed or fails validation.
-    """
-    if len(label) > _max_input_length:
-        raise IDNAError("Label too long")
-    if not isinstance(label, (bytes, bytearray)):
-        try:
-            label_bytes = label.encode("ascii")
-        except UnicodeEncodeError:
-            check_label(label)
-            return label
-    else:
-        label_bytes = bytes(label)
-
-    label_bytes = label_bytes.lower()
-    if label_bytes.startswith(_alabel_prefix):
-        label_bytes = label_bytes[len(_alabel_prefix) :]
-        if not label_bytes:
-            raise IDNAError("Malformed A-label, no Punycode eligible content found")
-        if label_bytes.endswith(b"-"):
-            raise IDNAError("A-label must not end with a hyphen")
-    else:
-        check_label(label_bytes)
-        return label_bytes.decode("ascii")
-
-    try:
-        label = label_bytes.decode("punycode")
-    except UnicodeError as err:
-        raise IDNAError("Invalid A-label") from err
-    check_label(label)
-    return label
-
-
-def uts46_remap(domain: str, std3_rules: bool = True, transitional: bool = False) -> str:
-    """Apply the UTS #46 character mapping to a domain string.
-
-    Implements the mapping table from `UTS #46 §4
-    <https://www.unicode.org/reports/tr46/>`_: each character is kept,
-    replaced, or rejected based on its status (``V``, ``M``, ``D``, ``3``,
-    ``I``). The result is returned in Normalisation Form C.
-
-    :param domain: The full domain name to remap.
-    :param std3_rules: If ``True``, apply the stricter STD3 ASCII rules
-        (status ``3`` codepoints raise instead of being kept or mapped).
-    :param transitional: If ``True``, use transitional processing (status
-        ``D`` codepoints are mapped instead of kept). Transitional
-        processing has been removed from UTS #46 and this option is
-        retained only for backwards compatibility.
-    :returns: The remapped domain, in Normalisation Form C.
-    :raises InvalidCodepoint: If the domain contains a disallowed
-        codepoint under the chosen rules.
-    :raises IDNAError: If ``domain`` exceeds the defensive input length limit.
-    """
-    if len(domain) > _max_input_length:
-        raise IDNAError("Domain too long")
-    from .uts46data import uts46_replacements, uts46_starts, uts46_statuses
-
-    output = ""
-
-    for pos, char in enumerate(domain):
-        code_point = ord(char)
-        i = code_point if code_point < 256 else bisect.bisect_right(uts46_starts, code_point) - 1
-        status = chr(uts46_statuses[i])
-        replacement: Optional[str] = uts46_replacements[i]
-
-        # UTS #46 §4: V is always valid, D is deviation (kept unless transitional),
-        # 3 is disallowed-STD3 (kept unmapped if std3_rules is off and no mapping).
-        keep_as_is = (
-            status == "V" or (status == "D" and not transitional) or (status == "3" and not std3_rules and replacement is None)
-        )
-        # M is mapped, 3-with-replacement and transitional D fall through to the
-        # same replacement output path.
-        use_replacement = replacement is not None and (
-            status == "M" or (status == "3" and not std3_rules) or (status == "D" and transitional)
-        )
-
-        if keep_as_is:
-            output += char
-        elif use_replacement:
-            assert replacement is not None  # narrowed by use_replacement
-            output += replacement
-        elif status == "I":
-            continue
-        else:
-            raise InvalidCodepoint(f"Codepoint {_unot(code_point)} not allowed at position {pos + 1} in {domain!r}")
-
-    return unicodedata.normalize("NFC", output)
-
-
-def encode(
-    s: Union[str, bytes, bytearray],
-    strict: bool = False,
-    uts46: bool = False,
-    std3_rules: bool = False,
-    transitional: bool = False,
-) -> bytes:
-    """Encode a Unicode domain name into its ASCII (A-label) form.
-
-    Splits the input on label separators (only ``U+002E`` if ``strict`` is
-    set; otherwise also IDEOGRAPHIC FULL STOP ``U+3002``, FULLWIDTH FULL
-    STOP ``U+FF0E``, and HALFWIDTH IDEOGRAPHIC FULL STOP ``U+FF61``),
-    encodes each label with :func:`alabel`, and rejoins them with ``.``.
-    Optionally pre-processes the input through :func:`uts46_remap`.
-
-    :param s: The domain name to encode.
-    :param strict: If ``True``, only ``U+002E`` is recognised as a label
-        separator.
-    :param uts46: If ``True``, apply UTS #46 mapping before encoding.
-    :param std3_rules: Forwarded to :func:`uts46_remap` when ``uts46`` is
-        ``True``.
-    :param transitional: Forwarded to :func:`uts46_remap` when ``uts46``
-        is ``True``. Deprecated: emits a :class:`DeprecationWarning` and
-        will be removed in a future version.
-    :returns: The encoded domain as ASCII :class:`bytes`.
-    :raises IDNAError: If the domain is empty, contains an invalid label,
-        or exceeds the maximum domain length.
-    """
-    if transitional:
-        warnings.warn(
-            "Transitional processing has been removed from UTS #46. "
-            "The transitional argument will be removed in a future version.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if not isinstance(s, str):
-        try:
-            s = str(s, "ascii")
-        except (UnicodeDecodeError, TypeError) as err:
-            raise IDNAError("should pass a unicode string to the function rather than a byte string.") from err
-    if len(s) > _max_input_length:
-        raise IDNAError("Domain too long")
-    if uts46:
-        s = uts46_remap(s, std3_rules, transitional)
-
-    # Reject inputs that exceed the maximum DNS domain length up-front
-    # to avoid expensive computation on long inputs.
-    if not valid_string_length(s, trailing_dot=True):
-        raise IDNAError("Domain too long")
-
-    trailing_dot = False
-    result = []
-    labels = s.split(".") if strict else _unicode_dots_re.split(s)
-    if not labels or labels == [""]:
-        raise IDNAError("Empty domain")
-    if labels[-1] == "":
-        del labels[-1]
-        trailing_dot = True
-    for label in labels:
-        s = alabel(label)
-        if s:
-            result.append(s)
-        else:
-            raise IDNAError("Empty label")
-    if trailing_dot:
-        result.append(b"")
-    s = b".".join(result)
-    if not valid_string_length(s, trailing_dot):
-        raise IDNAError("Domain too long")
-    return s
-
-
-def decode(
-    s: Union[str, bytes, bytearray],
-    strict: bool = False,
-    uts46: bool = False,
-    std3_rules: bool = False,
-    display: bool = False,
-) -> str:
-    """Decode an A-label-encoded domain name back to Unicode.
-
-    Splits the input on label separators (see :func:`encode` for the
-    rules), decodes each label with :func:`ulabel`, and rejoins them
-    with ``.``. Optionally pre-processes the input through
-    :func:`uts46_remap`.
-
-    :param s: The domain name to decode.
-    :param strict: If ``True``, only ``U+002E`` is recognised as a label
-        separator.
-    :param uts46: If ``True``, apply UTS #46 mapping before decoding.
-    :param std3_rules: Forwarded to :func:`uts46_remap` when ``uts46`` is
-        ``True``.
-    :param display: If ``True``, any ``xn--`` label that fails IDNA
-        validation is passed through unchanged (lowercased) rather than
-        aborting the whole call. Intended for "decode for display"
-        consumers (e.g. URL libraries, HTTP clients) that want to show
-        the user the label as it appears on the wire when it cannot be
-        rendered as Unicode. Matches the per-label recovery prescribed
-        by UTS #46 §4 and the WHATWG URL "domain to Unicode" algorithm.
-    :returns: The decoded domain as a Unicode string.
-    :raises IDNAError: If the input is not valid ASCII, contains an
-        invalid label, or is empty.
-    """
-    if not isinstance(s, str):
-        try:
-            s = str(s, "ascii")
-        except (UnicodeDecodeError, TypeError) as err:
-            raise IDNAError("Invalid ASCII in A-label") from err
-    if len(s) > _max_input_length:
-        raise IDNAError("Domain too long")
-    if uts46:
-        s = uts46_remap(s, std3_rules, False)
-    # Reject inputs that exceed the maximum DNS domain length up-front
-    # to avoid expensive computation on long inputs.
-    if not valid_string_length(s, trailing_dot=True):
-        raise IDNAError("Domain too long")
-    trailing_dot = False
-    result = []
-    labels = s.split(".") if strict else _unicode_dots_re.split(s)
-    if not labels or labels == [""]:
-        raise IDNAError("Empty domain")
-    if not labels[-1]:
-        del labels[-1]
-        trailing_dot = True
-    for label in labels:
-        try:
-            u = ulabel(label)
-        except IDNAError:
-            if display and label[:4].lower() == "xn--":
-                u = label.lower()
+def convert_to_tensor(x, dtype=None, sparse=None, ragged=None):
+    if sparse:
+        raise ValueError("`sparse=True` is not supported with torch backend")
+    if ragged:
+        raise ValueError("`ragged=True` is not supported with torch backend")
+    if isinstance(x, Variable) or is_tensor(x):
+        if isinstance(x, Variable):
+            x = x.value
+        device = get_device()
+        if x.device != device:
+            if x.is_meta:
+                x = torch.empty_like(x, device=device)
             else:
-                raise
-        if u:
-            result.append(u)
+                x = x.to(device)
+        if dtype is not None:
+            x = x.to(to_torch_dtype(dtype))
+        return x
+    if dtype is None:
+        if isinstance(x, bool):
+            return torch.as_tensor(x, dtype=torch.bool, device=get_device())
+        elif isinstance(x, int):
+            if x < -(2**31) or x >= 2**31:
+                return torch.as_tensor(
+                    x, dtype=torch.int64, device=get_device()
+                )
+            return torch.as_tensor(x, dtype=torch.int32, device=get_device())
+        elif isinstance(x, float):
+            return torch.as_tensor(
+                x, dtype=to_torch_dtype(floatx()), device=get_device()
+            )
+
+    # Convert to np in case of any array-like that is not list or tuple.
+    if not isinstance(x, (list, tuple)):
+        x = np.array(x)
+    elif len(x) > 0 and any(isinstance(x1, torch.Tensor) for x1 in x):
+        # Handle list or tuple of torch tensors
+        return torch.stack([convert_to_tensor(x1) for x1 in x])
+    if isinstance(x, np.ndarray):
+        if x.dtype == np.uint32:
+            # Torch backend does not support uint32.
+            x = x.astype(np.int64)
+        if standardize_dtype(x.dtype) == "bfloat16":
+            # Torch backend does not support converting bfloat16 ndarray.
+            x = x.astype(np.float32)
+            dtype = "bfloat16"
+        dtype = dtype or x.dtype
+    if dtype is None:
+        dtype = result_type(
+            *[getattr(item, "dtype", type(item)) for item in tree.flatten(x)]
+        )
+    dtype = to_torch_dtype(dtype)
+    return torch.as_tensor(x, dtype=dtype, device=get_device())
+
+
+def convert_to_numpy(x):
+    def transform(x):
+        if is_tensor(x):
+            if x.requires_grad:
+                x = x.detach()
+            # Tensor has to be moved to CPU before converting to numpy.
+            if x.device != torch.device("cpu"):
+                x = x.cpu()
+            if x.dtype == torch.bfloat16:
+                # Attempting to call .numpy() on a bfloat16 torch tensor leads
+                # to an immediate error. Instead we upcast to float32 and then
+                # convert to the numpy friendly bfloat16 type.
+                # https://github.com/pytorch/pytorch/issues/90574
+                return np.array(x.to(torch.float32)).astype(ml_dtypes.bfloat16)
+        return np.array(x)
+
+    if isinstance(x, (list, tuple)):
+        return np.array([transform(e) for e in x])
+    return transform(x)
+
+
+def is_tensor(x):
+    # Using the built-in `isinstance` is recommended by pytorch
+    # over using torch.is_tensor
+    # see: https://pytorch.org/docs/stable/generated/torch.is_tensor.html
+    #
+    # Also, `torch.is_tensor()` causes issues with dynamo caching when
+    # a torch.Tensor and numpy.ndarray of the same size, shape, and dtype
+    # is passed, if called on a Tensor first the second call with ndarray
+    # will return `True` and vice-versa.
+    return isinstance(x, torch.Tensor)
+
+
+def shape(x):
+    # Convert from `torch.Size` to plain tuple.
+    return tuple(x.shape)
+
+
+def cast(x, dtype):
+    dtype = to_torch_dtype(dtype)
+    if isinstance(x, Variable):
+        x = x.value
+    if is_tensor(x):
+        if x.dtype == dtype:
+            return x
         else:
-            raise IDNAError("Empty label")
-    if trailing_dot:
-        result.append("")
-    return ".".join(result)
+            return x.to(dtype)
+    return convert_to_tensor(x, dtype)
+
+
+# Shape / dtype inference util
+def compute_output_spec(fn, *args, **kwargs):
+    def has_none_shape(x):
+        """Check for if a `KerasTensor` has dynamic shape."""
+        if isinstance(x, KerasTensor):
+            return None in x.shape
+        return False
+
+    def convert_keras_tensor_to_torch(x, fill_value=None):
+        """Convert `KerasTensor`s to `torch.Tensor`s."""
+        if isinstance(x, KerasTensor):
+            shape = list(x.shape)
+            if fill_value:
+                for i, e in enumerate(shape):
+                    if e is None:
+                        shape[i] = fill_value
+            return torch.ones(
+                size=shape,
+                dtype=TORCH_DTYPES[x.dtype],
+                device=get_device(),
+            )
+        return x
+
+    def convert_torch_to_keras_tensor(x):
+        """Convert `torch.Tensor`s to `KerasTensor`s."""
+        if is_tensor(x):
+            return KerasTensor(x.shape, standardize_dtype(x.dtype))
+        return x
+
+    def symbolic_call(fn, args, kwargs, fill_value):
+        """Call `fn` to infer output shape and dtype."""
+        try:
+            # First try instantiating all tensors on the `"meta"` device,
+            # which  should give a "zero flop" way to trace shape, but does
+            # not have universal support with torch operations.
+            with device_scope("meta"):
+                meta_args, meta_kwargs = tree.map_structure(
+                    lambda x: convert_keras_tensor_to_torch(x, fill_value),
+                    (args, kwargs),
+                )
+                return fn(*meta_args, **meta_kwargs)
+        except:
+            with device_scope(DEFAULT_DEVICE):
+                # If the `"meta"` device placement fails, fall back to tracing
+                # eagerly with tensors on the default device. This will be
+                # more robust, but more expensive.
+                eager_args, eager_kwargs = tree.map_structure(
+                    lambda x: convert_keras_tensor_to_torch(x, fill_value),
+                    (args, kwargs),
+                )
+                return fn(*eager_args, **eager_kwargs)
+
+    with StatelessScope(), SymbolicScope(), torch.no_grad():
+        outputs = symbolic_call(fn, args, kwargs, fill_value=83)
+
+        none_in_shape = any(
+            builtins.map(has_none_shape, tree.flatten((args, kwargs)))
+        )
+        if none_in_shape:
+            outputs_1 = outputs
+            outputs_2 = symbolic_call(fn, args, kwargs, fill_value=89)
+
+            flat_out_1 = tree.flatten(outputs_1)
+            flat_out_2 = tree.flatten(outputs_2)
+
+            flat_out = []
+            for x1, x2 in zip(flat_out_1, flat_out_2):
+                shape = list(x1.shape)
+                for i, e in enumerate(x2.shape):
+                    if e != shape[i]:
+                        shape[i] = None
+                flat_out.append(KerasTensor(shape, standardize_dtype(x1.dtype)))
+            outputs = tree.pack_sequence_as(outputs_1, flat_out)
+
+        output_spec = tree.map_structure(convert_torch_to_keras_tensor, outputs)
+    return output_spec
+
+
+def cond(pred, true_fn, false_fn):
+    # When symbolic execution, take pred as true.
+    if get_device() == "meta":
+        return true_fn()
+
+    if pred:
+        return true_fn()
+    return false_fn()
+
+
+def vectorized_map(function, elements):
+    return torch.vmap(function)(elements)
+
+
+def map(f, xs):
+    def g(_, x):
+        return (), f(x)
+
+    _, ys = scan(g, (), xs)
+    return ys
+
+
+def scan(f, init, xs=None, length=None, reverse=False, unroll=1):
+    # Ref: jax.lax.scan
+    if not callable(f):
+        raise TypeError(f"`f` should be a callable. Received: f={f}")
+    if not isinstance(unroll, bool):
+        if not isinstance(unroll, int) or unroll < 1:
+            raise ValueError(
+                "`unroll` must be an positive integer or boolean. "
+                f"Received: unroll={unroll}"
+            )
+    if xs is None and length is None:
+        raise ValueError("Got no `xs` to scan over and `length` not provided.")
+
+    input_is_sequence = tree.is_nested(xs)
+    output_is_sequence = tree.is_nested(init)
+
+    def pack_input(x):
+        return tree.pack_sequence_as(xs, x) if input_is_sequence else x[0]
+
+    def pack_output(x):
+        return tree.pack_sequence_as(init, x) if output_is_sequence else x[0]
+
+    if xs is None:
+        xs_flat = []
+        n = int(length)
+    else:
+        xs_flat = tree.flatten(xs)
+        xs_flat = [convert_to_tensor(elem) for elem in xs_flat]
+        n = int(length) if length is not None else shape(xs_flat[0])[0]
+
+    init_flat = tree.flatten(init)
+    init_flat = [convert_to_tensor(init) for init in init_flat]
+    init = pack_output(init_flat)
+    dummy_y = [torch.zeros_like(init) for init in init_flat]
+
+    carry = init
+    ys = []
+    maybe_reversed = reversed if reverse else lambda x: x
+    for i in maybe_reversed(range(n)):
+        xs_slice = [x[i] for x in xs_flat]
+        packed_xs = pack_input(xs_slice) if len(xs_slice) > 0 else None
+        carry, y = f(carry, packed_xs)
+        ys.append(y if y is not None else dummy_y)
+    stacked_y = tree.map_structure(
+        lambda *ys: torch.stack(ys), *maybe_reversed(ys)
+    )
+    return carry, stacked_y
+
+
+def associative_scan(f, elems, reverse=False, axis=0):
+    # Ref: jax.lax.associative_scan
+    if not callable(f):
+        raise TypeError(f"`f` should be a callable. Received: f={f}")
+    elems_flat = tree.flatten(elems)
+    elems_flat = [convert_to_tensor(elem) for elem in elems_flat]
+    if reverse:
+        elems_flat = [torch.flip(elem, (axis,)) for elem in elems_flat]
+
+    def _combine(a_flat, b_flat):
+        a_flat = [convert_to_tensor(a) for a in a_flat]
+        b_flat = [convert_to_tensor(b) for b in b_flat]
+
+        a = tree.pack_sequence_as(elems, a_flat)
+        b = tree.pack_sequence_as(elems, b_flat)
+        c = f(a, b)
+        c_flat = tree.flatten(c)
+        return c_flat
+
+    num_elems = int(elems_flat[0].shape[axis])
+    if not all(int(elem.shape[axis]) == num_elems for elem in elems_flat[1:]):
+        raise ValueError(
+            "Array inputs to associative_scan must have the same "
+            "first dimension. (saw: {})".format(
+                [elem.shape for elem in elems_flat]
+            )
+        )
+
+    def _interleave(a, b, axis):
+        """Given two Tensors of static shape, interleave them along axis."""
+        if not (
+            a.shape[axis] == b.shape[axis] or a.shape[axis] == b.shape[axis] + 1
+        ):
+            raise ValueError(
+                "Shapes are incompatible for associative_scan interleaving. "
+                f"a.shape[{axis}]={a.shape[axis]}, "
+                f"b.shape[{axis}]={b.shape[axis]}"
+            )
+
+        # we want to get a: [a1, a2], b: [b1, b2]
+        # to a: [a1, 0, a2, 0], b: [0, b1, 0, b2]
+        a_shape = list(a.shape)
+        a_shape[axis] = a.shape[axis] * 2 - 1
+
+        b_shape = list(b.shape)
+        b_shape[axis] = b.shape[axis] * 2 - 1
+
+        a_dil = torch.zeros(a_shape)
+        slice_along_axis(a_dil, 0, None, 2, axis).copy_(a)
+
+        b_dil = torch.zeros(b_shape)
+        slice_along_axis(b_dil, 0, None, 2, axis).copy_(b)
+
+        a_pad = [[0, 0] for _ in range(a.dim())]
+        a_pad[axis][-1] = 1 if a.shape[axis] == b.shape[axis] else 0
+        a_pad = a_pad[::-1]
+        a_pad = tree.flatten(a_pad)
+
+        b_pad = [[0, 0] for _ in range(b.dim())]
+        b_pad[axis] = [1, 0] if a.shape[axis] == b.shape[axis] else [1, 1]
+        b_pad = b_pad[::-1]
+        b_pad = tree.flatten(b_pad)
+
+        op = torch.bitwise_or if a.dtype == torch.bool else torch.add
+        return op(
+            torch.nn.functional.pad(a_dil, a_pad),
+            torch.nn.functional.pad(b_dil, b_pad),
+        )
+
+    def _scan(elems):
+        num_elems = elems[0].shape[axis]
+        if num_elems < 2:
+            return elems
+
+        reduced_elems = _combine(
+            [
+                slice_along_axis(elem, 0, -1, step=2, axis=axis)
+                for elem in elems
+            ],
+            [
+                slice_along_axis(elem, 1, None, step=2, axis=axis)
+                for elem in elems
+            ],
+        )
+
+        odd_elems = _scan(reduced_elems)
+        if num_elems % 2 == 0:
+            even_elems = _combine(
+                [slice_along_axis(e, 0, -1, axis=axis) for e in odd_elems],
+                [
+                    slice_along_axis(e, 2, None, step=2, axis=axis)
+                    for e in elems
+                ],
+            )
+        else:
+            even_elems = _combine(
+                odd_elems,
+                [
+                    slice_along_axis(e, 2, None, step=2, axis=axis)
+                    for e in elems
+                ],
+            )
+
+        even_elems = [
+            torch.cat(
+                [slice_along_axis(elem, 0, 1, axis=axis), result],
+                dim=axis,
+            )
+            for (elem, result) in zip(elems, even_elems)
+        ]
+        return list(
+            builtins.map(
+                functools.partial(_interleave, axis=axis), even_elems, odd_elems
+            )
+        )
+
+    scans = _scan(elems_flat)
+    if reverse:
+        scans = [torch.flip(scanned, (axis,)) for scanned in scans]
+
+    return tree.pack_sequence_as(elems, scans)
+
+
+def scatter(indices, values, shape):
+    indices = convert_to_tensor(indices)
+    values = convert_to_tensor(values)
+    zeros = torch.zeros(shape, dtype=values.dtype, device=get_device())
+
+    index_length = indices.shape[-1]
+    value_shape = shape[index_length:]
+    indices = torch.reshape(indices, [-1, index_length])
+    values = torch.reshape(values, [-1] + list(value_shape))
+
+    for i in range(indices.shape[0]):
+        index = indices[i]
+        zeros[tuple(index)] += values[i]
+    return zeros
+
+
+def scatter_update(inputs, indices, updates, reduction=None):
+    inputs = convert_to_tensor(inputs)
+    indices = convert_to_tensor(indices, dtype="int64")
+    updates = convert_to_tensor(updates, dtype=inputs.dtype)
+    indices = torch.transpose(indices, 0, 1)
+    idx = tuple(indices)
+
+    outputs = torch.clone(inputs)
+    if reduction is None:
+        outputs[idx] = updates
+    elif reduction == "add":
+        # Use index_put_ with accumulate=True for proper accumulation
+        outputs.index_put_(idx, updates, accumulate=True)
+    elif reduction == "max":
+        # Loop-based approach handles both scalar and slice updates.
+        # Associative, so sequential application handles duplicates.
+        indices_t = indices.T
+        for i in range(indices_t.shape[0]):
+            idx = tuple(indices_t[i])
+            outputs[idx] = torch.maximum(outputs[idx], updates[i])
+    elif reduction == "min":
+        indices_t = indices.T
+        for i in range(indices_t.shape[0]):
+            idx = tuple(indices_t[i])
+            outputs[idx] = torch.minimum(outputs[idx], updates[i])
+    elif reduction == "mul":
+        indices_t = indices.T
+        for i in range(indices_t.shape[0]):
+            idx = tuple(indices_t[i])
+            outputs[idx] = outputs[idx] * updates[i]
+    else:
+        raise ValueError(f"Unsupported reduction: {reduction}")
+    return outputs
+
+
+def slice(inputs, start_indices, shape):
+    shape_dtype = to_torch_dtype("int64")
+    inputs = convert_to_tensor(inputs)
+    start_indices = convert_to_tensor(start_indices).to(shape_dtype)
+    shape = convert_to_tensor(shape).to(shape_dtype)
+
+    python_slice = __builtins__["slice"]
+    slices = [
+        python_slice(start_index, start_index + length)
+        for start_index, length in zip(start_indices, shape)
+    ]
+    return inputs[slices]
+
+
+def slice_update(inputs, start_indices, updates):
+    shape_dtype = to_torch_dtype("int64")
+    inputs = convert_to_tensor(inputs)
+    start_indices = convert_to_tensor(start_indices).to(shape_dtype)
+    updates = convert_to_tensor(updates)
+
+    python_slice = __builtins__["slice"]
+    slices = [
+        python_slice(start_index, start_index + update_length)
+        for start_index, update_length in zip(start_indices, updates.shape)
+    ]
+    outputs = torch.clone(inputs)
+    outputs[slices] = updates
+    return outputs
+
+
+def switch(index, branches, *operands):
+    index = convert_to_tensor(index, "int32")
+    index = torch.clamp(index, 0, len(branches) - 1)
+    return branches[index](*operands)
+
+
+def while_loop(
+    cond,
+    body,
+    loop_vars,
+    maximum_iterations=None,
+):
+    current_iter = 0
+    iteration_check = lambda iter: (
+        maximum_iterations is None or iter < maximum_iterations
+    )
+    is_tuple = isinstance(loop_vars, (tuple, list))
+    loop_vars = tuple(loop_vars) if is_tuple else (loop_vars,)
+    loop_vars = tree.map_structure(convert_to_tensor, loop_vars)
+    while cond(*loop_vars) and iteration_check(current_iter):
+        loop_vars = body(*loop_vars)
+        if not isinstance(loop_vars, (list, tuple)):
+            loop_vars = (loop_vars,)
+        loop_vars = tuple(loop_vars)
+        current_iter += 1
+    return loop_vars if is_tuple else loop_vars[0]
+
+
+def fori_loop(lower, upper, body_fun, init_val):
+    val = init_val
+    for i in range(lower, upper):
+        val = body_fun(i, val)
+    return val
+
+
+def stop_gradient(variable):
+    if isinstance(variable, Variable):
+        variable = variable.value
+    # We can't use `.requires_grad_(False)` here since it only
+    # works when the tensor is a leaf node in the graph.
+    return variable.detach()
+
+
+def unstack(x, num=None, axis=0):
+    return x.unbind(axis)
+
+
+def random_seed_dtype():
+    # uint32 doesn't exist in torch. Seeds are conceptually uint32 values;
+    # int32 is used and the bit pattern is reinterpreted as uint32 at each
+    # call site (torch_seed_generator / torch.manual_seed) via & 0xFFFFFFFF.
+    return "int32"
+
+
+def remat(f):
+    """Implementation of rematerialization.
+
+    Args:
+        f: The function or operation to rematerialize.
+    Returns:
+        A function wrapping f that defines a custom gradient, which
+        recomputes f on the backwards pass of a gradient call.
+    """
+
+    def wrapped(*args, **kwargs):
+        return torch.utils.checkpoint.checkpoint(
+            f, *args, use_reentrant=False, **kwargs
+        )
+
+    return wrapped
+
+
+class custom_gradient:
+    """Decorator for custom gradients.
+
+    Args:
+        forward_fn: Forward pass function.
+    """
+
+    def __init__(self, forward_fn):
+        self.forward_fn = forward_fn
+
+    def __call__(self, *args, **kwargs):
+        return CustomGradientFunction.apply(self.forward_fn, *args, **kwargs)
+
+
+class CustomGradientFunction(torch.autograd.Function):
+    """Enables custom forward & backward passes for gradient computation."""
+
+    @staticmethod
+    def forward(ctx, forward_fn, *args, **kwargs):
+        """Forward pass computation specification.
+
+        Args:
+            ctx: Context object.
+            forward_fn: Function to compute forward pass.
+            *args: Arguments for the forward pass.
+            **kwargs: Keyword arguments for the forward pass.
+        """
+        ctx.forward_fn = forward_fn
+        ctx.save_for_backward(*args)
+        try:
+            output, ctx.grad_fn = forward_fn(*args, **kwargs)
+        except:
+            output = forward_fn(*args, **kwargs)
+            ctx.grad_fn = lambda *args, **kwargs: torch.full((), float("nan"))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """Backward pass computation specification.
+
+        Args:
+            ctx: Context object.
+            grad_output: Gradient with respect to the output.
+        """
+        args = ctx.saved_tensors
+        grad_fn = ctx.grad_fn
+        if grad_fn is None:
+            raise ValueError("grad_fn must be provided for custom gradient")
+        grads = grad_fn(*args, upstream=grad_output)
+        if not isinstance(grads, tuple):
+            grads = (grads,)
+        return (None,) + grads
