@@ -1,212 +1,241 @@
-#
-# This file is part of gunicorn released under the MIT license.
-# See the NOTICE for more information.
-#
+from __future__ import annotations
 
-from datetime import datetime
-import errno
-import os
-import select
+import functools
+import socket
 import ssl
 import sys
+import typing
 
-from gunicorn import http
-from gunicorn.http import wsgi
-from gunicorn import sock
-from gunicorn import util
-from gunicorn.workers import base
+from .._exceptions import (
+    ConnectError,
+    ConnectTimeout,
+    ExceptionMapping,
+    ReadError,
+    ReadTimeout,
+    WriteError,
+    WriteTimeout,
+    map_exceptions,
+)
+from .._utils import is_socket_readable
+from .base import SOCKET_OPTION, NetworkBackend, NetworkStream
 
 
-class StopWaiting(Exception):
-    """ exception raised to stop waiting for a connection """
+class TLSinTLSStream(NetworkStream):  # pragma: no cover
+    """
+    Because the standard `SSLContext.wrap_socket` method does
+    not work for `SSLSocket` objects, we need this class
+    to implement TLS stream using an underlying `SSLObject`
+    instance in order to support TLS on top of TLS.
+    """
 
+    # Defined in RFC 8449
+    TLS_RECORD_SIZE = 16384
 
-class SyncWorker(base.Worker):
+    def __init__(
+        self,
+        sock: socket.socket,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ):
+        self._sock = sock
+        self._incoming = ssl.MemoryBIO()
+        self._outgoing = ssl.MemoryBIO()
 
-    def accept(self, listener):
-        client, addr = listener.accept()
-        client.setblocking(1)
-        util.close_on_exec(client)
-        self.handle(listener, client, addr)
+        self.ssl_obj = ssl_context.wrap_bio(
+            incoming=self._incoming,
+            outgoing=self._outgoing,
+            server_hostname=server_hostname,
+        )
 
-    def wait(self, timeout):
-        try:
-            self.notify()
-            ret = select.select(self.wait_fds, [], [], timeout)
-            if ret[0]:
-                if self.PIPE[0] in ret[0]:
-                    os.read(self.PIPE[0], 1)
-                return ret[0]
+        self._sock.settimeout(timeout)
+        self._perform_io(self.ssl_obj.do_handshake)
 
-        except OSError as e:
-            if e.args[0] == errno.EINTR:
-                return self.sockets
-            if e.args[0] == errno.EBADF:
-                if self.nr < 0:
-                    return self.sockets
+    def _perform_io(
+        self,
+        func: typing.Callable[..., typing.Any],
+    ) -> typing.Any:
+        ret = None
+
+        while True:
+            errno = None
+            try:
+                ret = func()
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:
+                errno = e.errno
+
+            self._sock.sendall(self._outgoing.read())
+
+            if errno == ssl.SSL_ERROR_WANT_READ:
+                buf = self._sock.recv(self.TLS_RECORD_SIZE)
+
+                if buf:
+                    self._incoming.write(buf)
                 else:
-                    raise StopWaiting
-            raise
+                    self._incoming.write_eof()
+            if errno is None:
+                return ret
 
-    def is_parent_alive(self):
-        # If our parent changed then we shut down.
-        if self.ppid != os.getppid():
-            self.log.info("Parent changed, shutting down: %s", self)
-            return False
-        return True
-
-    def run_for_one(self, timeout):
-        listener = self.sockets[0]
-        while self.alive:
-            self.notify()
-
-            # Accept a connection. If we get an error telling us
-            # that no connection is waiting we fall down to the
-            # select which is where we'll wait for a bit for new
-            # workers to come give us some love.
-            try:
-                self.accept(listener)
-                # Keep processing clients until no one is waiting. This
-                # prevents the need to select() for every client that we
-                # process.
-                continue
-
-            except OSError as e:
-                if e.errno not in (errno.EAGAIN, errno.ECONNABORTED,
-                                   errno.EWOULDBLOCK):
-                    raise
-
-            if not self.is_parent_alive():
-                return
-
-            try:
-                self.wait(timeout)
-            except StopWaiting:
-                return
-
-    def run_for_multiple(self, timeout):
-        while self.alive:
-            self.notify()
-
-            try:
-                ready = self.wait(timeout)
-            except StopWaiting:
-                return
-
-            if ready is not None:
-                for listener in ready:
-                    if listener == self.PIPE[0]:
-                        continue
-
-                    try:
-                        self.accept(listener)
-                    except OSError as e:
-                        if e.errno not in (errno.EAGAIN, errno.ECONNABORTED,
-                                           errno.EWOULDBLOCK):
-                            raise
-
-            if not self.is_parent_alive():
-                return
-
-    def run(self):
-        # if no timeout is given the worker will never wait and will
-        # use the CPU for nothing. This minimal timeout prevent it.
-        timeout = self.timeout or 0.5
-
-        # Warn if HTTP/2 is requested - sync worker doesn't support it
-        if 'h2' in self.cfg.http_protocols:
-            self.log.warning(
-                "HTTP/2 is not supported by the sync worker. "
-                "Use gthread, gevent, or asgi workers for HTTP/2 support. "
-                "Falling back to HTTP/1.1 only."
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        exc_map: ExceptionMapping = {socket.timeout: ReadTimeout, OSError: ReadError}
+        with map_exceptions(exc_map):
+            self._sock.settimeout(timeout)
+            return typing.cast(
+                bytes, self._perform_io(functools.partial(self.ssl_obj.read, max_bytes))
             )
 
-        # self.socket appears to lose its blocking status after
-        # we fork in the arbiter. Reset it here.
-        for s in self.sockets:
-            s.setblocking(0)
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        exc_map: ExceptionMapping = {socket.timeout: WriteTimeout, OSError: WriteError}
+        with map_exceptions(exc_map):
+            self._sock.settimeout(timeout)
+            while buffer:
+                nsent = self._perform_io(functools.partial(self.ssl_obj.write, buffer))
+                buffer = buffer[nsent:]
 
-        if len(self.sockets) > 1:
-            self.run_for_multiple(timeout)
-        else:
-            self.run_for_one(timeout)
+    def close(self) -> None:
+        self._sock.close()
 
-    def handle(self, listener, client, addr):
-        req = None
-        try:
-            if self.cfg.is_ssl:
-                client = sock.ssl_wrap_socket(client, self.cfg)
-            parser = http.get_parser(self.cfg, client, addr)
-            req = next(parser)
-            self.handle_request(listener, req, client, addr)
-        except http.errors.NoMoreData as e:
-            self.log.debug("Ignored premature client disconnection. %s", e)
-        except StopIteration as e:
-            self.log.debug("Closing connection. %s", e)
-        except ssl.SSLError as e:
-            if e.args[0] == ssl.SSL_ERROR_EOF:
-                self.log.debug("ssl connection closed")
-                client.close()
-            else:
-                self.log.debug("Error processing SSL request.")
-                self.handle_error(req, client, addr, e)
-        except OSError as e:
-            if e.errno not in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN):
-                self.log.exception("Socket error processing request.")
-            else:
-                if e.errno == errno.ECONNRESET:
-                    self.log.debug("Ignoring connection reset")
-                elif e.errno == errno.ENOTCONN:
-                    self.log.debug("Ignoring socket not connected")
-                else:
-                    self.log.debug("Ignoring EPIPE")
-        except BaseException as e:
-            self.handle_error(req, client, addr, e)
-        finally:
-            util.close_graceful(client)
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> NetworkStream:
+        raise NotImplementedError()
 
-    def handle_request(self, listener, req, client, addr):
-        environ = {}
-        resp = None
-        try:
-            self.cfg.pre_request(self, req)
-            request_start = datetime.now()
-            resp, environ = wsgi.create(req, client, addr,
-                                        listener.getsockname(), self.cfg)
-            # Force the connection closed until someone shows
-            # a buffering proxy that supports Keep-Alive to
-            # the backend.
-            resp.force_close()
-            self.nr += 1
-            if self.nr >= self.max_requests:
-                self.log.info("Autorestarting worker after current request.")
-                self.alive = False
-            respiter = self.wsgi(environ, resp.start_response)
+    def get_extra_info(self, info: str) -> typing.Any:
+        if info == "ssl_object":
+            return self.ssl_obj
+        if info == "client_addr":
+            return self._sock.getsockname()
+        if info == "server_addr":
+            return self._sock.getpeername()
+        if info == "socket":
+            return self._sock
+        if info == "is_readable":
+            return is_socket_readable(self._sock)
+        return None
+
+
+class SyncStream(NetworkStream):
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+
+    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        exc_map: ExceptionMapping = {socket.timeout: ReadTimeout, OSError: ReadError}
+        with map_exceptions(exc_map):
+            self._sock.settimeout(timeout)
+            return self._sock.recv(max_bytes)
+
+    def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        if not buffer:
+            return
+
+        exc_map: ExceptionMapping = {socket.timeout: WriteTimeout, OSError: WriteError}
+        with map_exceptions(exc_map):
+            while buffer:
+                self._sock.settimeout(timeout)
+                n = self._sock.send(buffer)
+                buffer = buffer[n:]
+
+    def close(self) -> None:
+        self._sock.close()
+
+    def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> NetworkStream:
+        exc_map: ExceptionMapping = {
+            socket.timeout: ConnectTimeout,
+            OSError: ConnectError,
+        }
+        with map_exceptions(exc_map):
             try:
-                if isinstance(respiter, environ['wsgi.file_wrapper']):
-                    resp.write_file(respiter)
+                if isinstance(self._sock, ssl.SSLSocket):  # pragma: no cover
+                    # If the underlying socket has already been upgraded
+                    # to the TLS layer (i.e. is an instance of SSLSocket),
+                    # we need some additional smarts to support TLS-in-TLS.
+                    return TLSinTLSStream(
+                        self._sock, ssl_context, server_hostname, timeout
+                    )
                 else:
-                    for item in respiter:
-                        resp.write(item)
-                resp.close()
-            finally:
-                request_time = datetime.now() - request_start
-                self.log.access(resp, req, environ, request_time)
-                if hasattr(respiter, "close"):
-                    respiter.close()
-        except OSError:
-            # pass to next try-except level
-            util.reraise(*sys.exc_info())
-        except Exception:
-            if resp and resp.headers_sent:
-                # If the requests have already been sent, we should close the
-                # connection to indicate the error.
-                self.log.exception("Error handling request")
-                util.close_graceful(client)
-                raise StopIteration()
-            raise
-        finally:
-            try:
-                self.cfg.post_request(self, req, environ, resp)
-            except Exception:
-                self.log.exception("Exception in post_request hook")
+                    self._sock.settimeout(timeout)
+                    sock = ssl_context.wrap_socket(
+                        self._sock, server_hostname=server_hostname
+                    )
+            except Exception as exc:  # pragma: nocover
+                self.close()
+                raise exc
+        return SyncStream(sock)
+
+    def get_extra_info(self, info: str) -> typing.Any:
+        if info == "ssl_object" and isinstance(self._sock, ssl.SSLSocket):
+            return self._sock._sslobj  # type: ignore
+        if info == "client_addr":
+            return self._sock.getsockname()
+        if info == "server_addr":
+            return self._sock.getpeername()
+        if info == "socket":
+            return self._sock
+        if info == "is_readable":
+            return is_socket_readable(self._sock)
+        return None
+
+
+class SyncBackend(NetworkBackend):
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
+    ) -> NetworkStream:
+        # Note that we automatically include `TCP_NODELAY`
+        # in addition to any other custom socket options.
+        if socket_options is None:
+            socket_options = []  # pragma: no cover
+        address = (host, port)
+        source_address = None if local_address is None else (local_address, 0)
+        exc_map: ExceptionMapping = {
+            socket.timeout: ConnectTimeout,
+            OSError: ConnectError,
+        }
+
+        with map_exceptions(exc_map):
+            sock = socket.create_connection(
+                address,
+                timeout,
+                source_address=source_address,
+            )
+            for option in socket_options:
+                sock.setsockopt(*option)  # pragma: no cover
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return SyncStream(sock)
+
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
+    ) -> NetworkStream:  # pragma: nocover
+        if sys.platform == "win32":
+            raise RuntimeError(
+                "Attempted to connect to a UNIX socket on a Windows system."
+            )
+        if socket_options is None:
+            socket_options = []
+
+        exc_map: ExceptionMapping = {
+            socket.timeout: ConnectTimeout,
+            OSError: ConnectError,
+        }
+        with map_exceptions(exc_map):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            for option in socket_options:
+                sock.setsockopt(*option)
+            sock.settimeout(timeout)
+            sock.connect(path)
+        return SyncStream(sock)

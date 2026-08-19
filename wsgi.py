@@ -1,489 +1,149 @@
-#
-# This file is part of gunicorn released under the MIT license.
-# See the NOTICE for more information.
+from __future__ import annotations
 
 import io
-import logging
-import os
-import re
+import itertools
 import sys
+import typing
 
-from gunicorn.http.message import TOKEN_RE
-from gunicorn.http.errors import ConfigurationProblem, InvalidHeader, InvalidHeaderName
-from gunicorn import SERVER_SOFTWARE, SERVER
-from gunicorn import util
+from .._models import Request, Response
+from .._types import SyncByteStream
+from .base import BaseTransport
 
-# Send files in at most 1GB blocks as some operating systems can have problems
-# with sending files in blocks over 2GB.
-BLKSIZE = 0x3FFFFFFF
+if typing.TYPE_CHECKING:
+    from _typeshed import OptExcInfo  # pragma: no cover
+    from _typeshed.wsgi import WSGIApplication  # pragma: no cover
 
-# RFC9110 5.5: field-vchar = VCHAR / obs-text
-# RFC4234 B.1: VCHAR = 0x21-x07E = printable ASCII
-HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
-
-log = logging.getLogger(__name__)
+_T = typing.TypeVar("_T")
 
 
-class FileWrapper:
-
-    def __init__(self, filelike, blksize=8192):
-        self.filelike = filelike
-        self.blksize = blksize
-        if hasattr(filelike, 'close'):
-            self.close = filelike.close
-
-    def __getitem__(self, key):
-        data = self.filelike.read(self.blksize)
-        if data:
-            return data
-        raise IndexError
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        data = self.filelike.read(self.blksize)
-        if data:
-            return data
-        raise StopIteration
+__all__ = ["WSGITransport"]
 
 
-class WSGIErrorsWrapper(io.RawIOBase):
-
-    def __init__(self, cfg):
-        # There is no public __init__ method for RawIOBase so
-        # we don't need to call super() in the __init__ method.
-        # pylint: disable=super-init-not-called
-        errorlog = logging.getLogger("gunicorn.error")
-        handlers = errorlog.handlers
-        self.streams = []
-
-        if cfg.errorlog == "-":
-            self.streams.append(sys.stderr)
-            handlers = handlers[1:]
-
-        for h in handlers:
-            if hasattr(h, "stream"):
-                self.streams.append(h.stream)
-
-    def write(self, data):
-        for stream in self.streams:
-            try:
-                stream.write(data)
-            except UnicodeError:
-                stream.write(data.encode("UTF-8"))
-            stream.flush()
+def _skip_leading_empty_chunks(body: typing.Iterable[_T]) -> typing.Iterable[_T]:
+    body = iter(body)
+    for chunk in body:
+        if chunk:
+            return itertools.chain([chunk], body)
+    return []
 
 
-def base_environ(cfg):
-    return {
-        "wsgi.errors": WSGIErrorsWrapper(cfg),
-        "wsgi.version": (1, 0),
-        "wsgi.multithread": False,
-        "wsgi.multiprocess": (cfg.workers > 1),
-        "wsgi.run_once": False,
-        "wsgi.file_wrapper": FileWrapper,
-        "wsgi.input_terminated": True,
-        "SERVER_SOFTWARE": SERVER_SOFTWARE,
-    }
+class WSGIByteStream(SyncByteStream):
+    def __init__(self, result: typing.Iterable[bytes]) -> None:
+        self._close = getattr(result, "close", None)
+        self._result = _skip_leading_empty_chunks(result)
+
+    def __iter__(self) -> typing.Iterator[bytes]:
+        for part in self._result:
+            yield part
+
+    def close(self) -> None:
+        if self._close is not None:
+            self._close()
 
 
-def default_environ(req, sock, cfg):
-    env = base_environ(cfg)
-    env.update({
-        "wsgi.input": req.body,
-        "gunicorn.socket": sock,
-        "REQUEST_METHOD": req.method,
-        "QUERY_STRING": req.query,
-        "RAW_URI": req.uri,
-        "SERVER_PROTOCOL": "HTTP/%s" % ".".join([str(v) for v in req.version])
-    })
-    return env
-
-
-def proxy_environ(req):
-    info = req.proxy_protocol_info
-
-    if not info:
-        return {}
-
-    return {
-        "PROXY_PROTOCOL": info["proxy_protocol"],
-        "REMOTE_ADDR": info["client_addr"],
-        "REMOTE_PORT": str(info["client_port"]),
-        "PROXY_ADDR": info["proxy_addr"],
-        "PROXY_PORT": str(info["proxy_port"]),
-    }
-
-
-def _make_early_hints_callback(req, sock, resp):
-    """Create a wsgi.early_hints callback for sending 103 Early Hints.
-
-    This allows WSGI applications to send 103 Early Hints responses
-    before the final response, enabling browsers to preload resources.
-
-    Args:
-        req: The request object
-        sock: The socket to write to
-        resp: The Response object to check if headers have been sent
-
-    Returns:
-        A callback function that accepts a list of (name, value) header tuples
-        and sends a 103 Early Hints response.
-
-    Note:
-        - Early hints are only sent for HTTP/1.1 or later clients
-        - HTTP/1.0 clients will silently ignore the callback
-        - Multiple calls are allowed (sending multiple 103 responses)
-        - Calls after response has started are silently ignored
+class WSGITransport(BaseTransport):
     """
-    def send_early_hints(headers):
-        """Send 103 Early Hints response.
+    A custom transport that handles sending requests directly to an WSGI app.
+    The simplest way to use this functionality is to use the `app` argument.
 
-        Args:
-            headers: List of (name, value) header tuples, typically Link headers
-                     Example: [('Link', '</style.css>; rel=preload; as=style')]
+    ```
+    client = httpx.Client(app=app)
+    ```
 
-        Raises:
-            InvalidHeaderName: If a header name is not a valid HTTP token.
-            InvalidHeader: If a header value contains invalid characters.
-        """
-        # Don't send after response has started - would break framing
-        if resp.headers_sent:
-            return
+    Alternatively, you can setup the transport instance explicitly.
+    This allows you to include any additional configuration arguments specific
+    to the WSGITransport class:
 
-        # Don't send to HTTP/1.0 clients - they don't support 1xx responses
-        if req.version < (1, 1):
-            return
+    ```
+    transport = httpx.WSGITransport(
+        app=app,
+        script_name="/submount",
+        remote_addr="1.2.3.4"
+    )
+    client = httpx.Client(transport=transport)
+    ```
 
-        # Build 103 response
-        response = b"HTTP/1.1 103 Early Hints\r\n"
-        for name, value in headers:
-            if isinstance(name, bytes):
-                name = name.decode('latin-1')
-            if isinstance(value, bytes):
-                value = value.decode('latin-1')
+    Arguments:
 
-            # Validate header name and value using the same checks as
-            # Response.process_headers — defense-in-depth against
-            # HTTP response splitting via CRLF injection.
-            if not TOKEN_RE.fullmatch(name):
-                raise InvalidHeaderName('%r' % name)
-            if not HEADER_VALUE_RE.fullmatch(value):
-                # Pass only the name — the invalid value may contain
-                # sensitive data that shouldn't cross security boundaries
-                # via exception propagation (browsers/proxies may forward
-                # it to untrusted parties).
-                raise InvalidHeader('%r' % name)
+    * `app` - The WSGI application.
+    * `raise_app_exceptions` - Boolean indicating if exceptions in the application
+       should be raised. Default to `True`. Can be set to `False` for use cases
+       such as testing the content of a client 500 response.
+    * `script_name` - The root path on which the WSGI application should be mounted.
+    * `remote_addr` - A string indicating the client IP of incoming requests.
+    ```
+    """
 
-            value = value.strip(" \t")
-            response += f"{name}: {value}\r\n".encode('latin-1')
-        response += b"\r\n"
+    def __init__(
+        self,
+        app: WSGIApplication,
+        raise_app_exceptions: bool = True,
+        script_name: str = "",
+        remote_addr: str = "127.0.0.1",
+        wsgi_errors: typing.TextIO | None = None,
+    ) -> None:
+        self.app = app
+        self.raise_app_exceptions = raise_app_exceptions
+        self.script_name = script_name
+        self.remote_addr = remote_addr
+        self.wsgi_errors = wsgi_errors
 
-        util.write(sock, response)
+    def handle_request(self, request: Request) -> Response:
+        request.read()
+        wsgi_input = io.BytesIO(request.content)
 
-    return send_early_hints
+        port = request.url.port or {"http": 80, "https": 443}[request.url.scheme]
+        environ = {
+            "wsgi.version": (1, 0),
+            "wsgi.url_scheme": request.url.scheme,
+            "wsgi.input": wsgi_input,
+            "wsgi.errors": self.wsgi_errors or sys.stderr,
+            "wsgi.multithread": True,
+            "wsgi.multiprocess": False,
+            "wsgi.run_once": False,
+            "REQUEST_METHOD": request.method,
+            "SCRIPT_NAME": self.script_name,
+            "PATH_INFO": request.url.path,
+            "QUERY_STRING": request.url.query.decode("ascii"),
+            "SERVER_NAME": request.url.host,
+            "SERVER_PORT": str(port),
+            "SERVER_PROTOCOL": "HTTP/1.1",
+            "REMOTE_ADDR": self.remote_addr,
+        }
+        for header_key, header_value in request.headers.raw:
+            key = header_key.decode("ascii").upper().replace("-", "_")
+            if key not in ("CONTENT_TYPE", "CONTENT_LENGTH"):
+                key = "HTTP_" + key
+            environ[key] = header_value.decode("ascii")
 
+        seen_status = None
+        seen_response_headers = None
+        seen_exc_info = None
 
-def create(req, sock, client, server, cfg):
-    resp = Response(req, sock, cfg)
+        def start_response(
+            status: str,
+            response_headers: list[tuple[str, str]],
+            exc_info: OptExcInfo | None = None,
+        ) -> typing.Callable[[bytes], typing.Any]:
+            nonlocal seen_status, seen_response_headers, seen_exc_info
+            seen_status = status
+            seen_response_headers = response_headers
+            seen_exc_info = exc_info
+            return lambda _: None
 
-    # set initial environ
-    environ = default_environ(req, sock, cfg)
+        result = self.app(environ, start_response)
 
-    # default variables
-    host = None
-    script_name = os.environ.get("SCRIPT_NAME", "")
+        stream = WSGIByteStream(result)
 
-    if req._expected_100_continue:
-        sock.send(b"HTTP/1.1 100 Continue\r\n\r\n")
-        # rfc9112: Expect MUST be forwarded if the request is forwarded
-        # N.B. gunicorn just sends at most one - application might send another
+        assert seen_status is not None
+        assert seen_response_headers is not None
+        if seen_exc_info and seen_exc_info[0] and self.raise_app_exceptions:
+            raise seen_exc_info[1]
 
-    # add the headers to the environ
-    for hdr_name, hdr_value in req.headers:
-        if hdr_name == 'HOST':
-            host = hdr_value
-        elif hdr_name == "SCRIPT_NAME":
-            script_name = hdr_value
-        elif hdr_name == "CONTENT-TYPE":
-            environ['CONTENT_TYPE'] = hdr_value
-            continue
-        elif hdr_name == "CONTENT-LENGTH":
-            environ['CONTENT_LENGTH'] = hdr_value
-            continue
-
-        # do not change lightly, this is a common source of security problems
-        # RFC9110 Section 17.10 discourages ambiguous or incomplete mappings
-        key = 'HTTP_' + hdr_name.replace('-', '_')
-        if key in environ:
-            hdr_value = "%s,%s" % (environ[key], hdr_value)
-        environ[key] = hdr_value
-
-    # set the url scheme
-    environ['wsgi.url_scheme'] = req.scheme
-
-    # set the REMOTE_* keys in environ
-    # authors should be aware that REMOTE_HOST and REMOTE_ADDR
-    # may not qualify the remote addr:
-    # http://www.ietf.org/rfc/rfc3875
-    if isinstance(client, str):
-        environ['REMOTE_ADDR'] = client
-    elif isinstance(client, bytes):
-        environ['REMOTE_ADDR'] = client.decode()
-    else:
-        environ['REMOTE_ADDR'] = client[0]
-        environ['REMOTE_PORT'] = str(client[1])
-
-    # handle the SERVER_*
-    # Normally only the application should use the Host header but since the
-    # WSGI spec doesn't support unix sockets, we are using it to create
-    # viable SERVER_* if possible.
-    if isinstance(server, str):
-        server = server.split(":")
-        if len(server) == 1:
-            # unix socket
-            if host:
-                server = host.split(':')
-                if len(server) == 1:
-                    if req.scheme == "http":
-                        server.append(80)
-                    elif req.scheme == "https":
-                        server.append(443)
-                    else:
-                        server.append('')
-            else:
-                # no host header given which means that we are not behind a
-                # proxy, so append an empty port.
-                server.append('')
-    environ['SERVER_NAME'] = server[0]
-    environ['SERVER_PORT'] = str(server[1])
-
-    # set the path and script name
-    path_info = req.path
-    if script_name:
-        if not path_info.startswith(script_name):
-            raise ConfigurationProblem(
-                "Request path %r does not start with SCRIPT_NAME %r" %
-                (path_info, script_name))
-        path_info = path_info[len(script_name):]
-    environ['PATH_INFO'] = util.unquote_to_wsgi_str(path_info)
-    environ['SCRIPT_NAME'] = script_name
-
-    # override the environ with the correct remote and server address if
-    # we are behind a proxy using the proxy protocol.
-    environ.update(proxy_environ(req))
-
-    # Add wsgi.early_hints callback for sending 103 Early Hints
-    environ['wsgi.early_hints'] = _make_early_hints_callback(req, sock, resp)
-
-    # Add HTTP/2 stream priority if available
-    if hasattr(req, 'priority_weight'):
-        environ['gunicorn.http2.priority_weight'] = req.priority_weight
-        environ['gunicorn.http2.priority_depends_on'] = req.priority_depends_on
-
-    return resp, environ
-
-
-class Response:
-
-    def __init__(self, req, sock, cfg):
-        self.req = req
-        self.sock = sock
-        self.version = SERVER
-        self.status = None
-        self.chunked = False
-        self.must_close = False
-        self.headers = []
-        self.headers_sent = False
-        self.response_length = None
-        self.sent = 0
-        self.upgrade = False
-        self.cfg = cfg
-
-    def force_close(self):
-        self.must_close = True
-
-    def should_close(self):
-        if self.must_close or self.req.should_close():
-            return True
-        if self.response_length is not None or self.chunked:
-            return False
-        if self.req.method == 'HEAD':
-            return False
-        if self.status_code < 200 or self.status_code in (204, 304):
-            return False
-        return True
-
-    def start_response(self, status, headers, exc_info=None):
-        if exc_info:
-            try:
-                if self.status and self.headers_sent:
-                    util.reraise(exc_info[0], exc_info[1], exc_info[2])
-            finally:
-                exc_info = None
-        elif self.status is not None:
-            raise AssertionError("Response headers already set!")
-
-        self.status = status
-
-        # get the status code from the response here so we can use it to check
-        # the need for the connection header later without parsing the string
-        # each time.
-        try:
-            self.status_code = int(self.status.split()[0])
-        except ValueError:
-            self.status_code = None
-
-        self.process_headers(headers)
-        self.chunked = self.is_chunked()
-        return self.write
-
-    def process_headers(self, headers):
-        for name, value in headers:
-            if not isinstance(name, str):
-                raise TypeError('%r is not a string' % name)
-
-            if not TOKEN_RE.fullmatch(name):
-                raise InvalidHeaderName('%r' % name)
-
-            if not isinstance(value, str):
-                raise TypeError('%r is not a string' % value)
-
-            if not HEADER_VALUE_RE.fullmatch(value):
-                raise InvalidHeader('%r' % value)
-
-            # RFC9110 5.5
-            value = value.strip(" \t")
-            lname = name.lower()
-            if lname == "content-length":
-                self.response_length = int(value)
-            elif util.is_hoppish(name):
-                if lname == "connection":
-                    # handle websocket
-                    if value.lower() == "upgrade":
-                        self.upgrade = True
-                elif lname == "upgrade":
-                    if value.lower() == "websocket":
-                        self.headers.append((name, value))
-
-                # ignore hopbyhop headers
-                continue
-            self.headers.append((name, value))
-
-    def is_chunked(self):
-        # Only use chunked responses when the client is
-        # speaking HTTP/1.1 or newer and there was
-        # no Content-Length header set.
-        if self.response_length is not None:
-            return False
-        elif self.req.version <= (1, 0):
-            return False
-        elif self.req.method == 'HEAD':
-            # Responses to a HEAD request MUST NOT contain a response body.
-            return False
-        elif self.status_code in (204, 304):
-            # Do not use chunked responses when the response is guaranteed to
-            # not have a response body.
-            return False
-        return True
-
-    def default_headers(self):
-        # set the connection header
-        if self.upgrade:
-            connection = "upgrade"
-        elif self.should_close():
-            connection = "close"
-        else:
-            connection = "keep-alive"
-
+        status_code = int(seen_status.split()[0])
         headers = [
-            "HTTP/%s.%s %s\r\n" % (self.req.version[0],
-                                   self.req.version[1], self.status),
-            "Server: %s\r\n" % self.version,
-            "Date: %s\r\n" % util.http_date(),
-            "Connection: %s\r\n" % connection
+            (key.encode("ascii"), value.encode("ascii"))
+            for key, value in seen_response_headers
         ]
-        if self.chunked:
-            headers.append("Transfer-Encoding: chunked\r\n")
-        return headers
 
-    def send_headers(self):
-        if self.headers_sent:
-            return
-        tosend = self.default_headers()
-        tosend.extend(["%s: %s\r\n" % (k, v) for k, v in self.headers])
-
-        header_str = "%s\r\n" % "".join(tosend)
-        util.write(self.sock, util.to_bytestring(header_str, "latin-1"))
-        self.headers_sent = True
-
-    def write(self, arg):
-        self.send_headers()
-        if not isinstance(arg, bytes):
-            raise TypeError('%r is not a byte' % arg)
-        arglen = len(arg)
-        tosend = arglen
-        if self.response_length is not None:
-            if self.sent >= self.response_length:
-                # Never write more than self.response_length bytes
-                return
-
-            tosend = min(self.response_length - self.sent, tosend)
-            if tosend < arglen:
-                arg = arg[:tosend]
-
-        # Sending an empty chunk signals the end of the
-        # response and prematurely closes the response
-        if self.chunked and tosend == 0:
-            return
-
-        self.sent += tosend
-        util.write(self.sock, arg, self.chunked)
-
-    def can_sendfile(self):
-        return self.cfg.sendfile is not False
-
-    def sendfile(self, respiter):
-        if self.cfg.is_ssl or not self.can_sendfile():
-            return False
-
-        if not util.has_fileno(respiter.filelike):
-            return False
-
-        fileno = respiter.filelike.fileno()
-        try:
-            offset = os.lseek(fileno, 0, os.SEEK_CUR)
-            if self.response_length is None:
-                filesize = os.fstat(fileno).st_size
-                nbytes = filesize - offset
-            else:
-                nbytes = self.response_length
-        except (OSError, io.UnsupportedOperation):
-            return False
-
-        self.send_headers()
-
-        if self.is_chunked():
-            chunk_size = "%X\r\n" % nbytes
-            self.sock.sendall(chunk_size.encode('utf-8'))
-        if nbytes > 0:
-            self.sock.sendfile(respiter.filelike, offset=offset, count=nbytes)
-
-        if self.is_chunked():
-            self.sock.sendall(b"\r\n")
-
-        os.lseek(fileno, offset, os.SEEK_SET)
-
-        return True
-
-    def write_file(self, respiter):
-        if not self.sendfile(respiter):
-            for item in respiter:
-                self.write(item)
-
-    def close(self):
-        if not self.headers_sent:
-            self.send_headers()
-        if self.chunked:
-            util.write_chunk(self.sock, b"")
+        return Response(status_code, headers=headers, stream=stream)

@@ -1,48 +1,41 @@
-"""
-Compatibility module for high-level h5py
-"""
-import sys
-from os import fspath, fsencode, fsdecode
-from ..version import hdf5_built_version_tuple
+from typing import Any, Union
 
-# HDF5 supported passing paths as UTF-8 for Windows from 1.10.6, but this
-# was broken again in 1.14.4 - https://github.com/HDFGroup/hdf5/issues/5037 .
-# The change was reverted in 1.14.6.
-if (1, 14, 4) <= hdf5_built_version_tuple < (1, 14, 6):
-    WINDOWS_ENCODING = "mbcs"
-else:
-    WINDOWS_ENCODING = "utf-8"
+from .core import decode, encode
 
 
-def filename_encode(filename):
+def ToASCII(label: str) -> bytes:
+    """Compatibility shim for :rfc:`3490` ``ToASCII``.
+
+    Delegates to :func:`idna.encode` (IDNA 2008). Provided to ease porting
+    of code written against the legacy :mod:`encodings.idna` API; new code
+    should call :func:`idna.encode` directly.
+
+    :param label: The label or domain to encode.
+    :returns: The encoded form as ASCII :class:`bytes`.
     """
-    Encode filename for use in the HDF5 library.
+    return encode(label)
 
-    Due to how HDF5 handles filenames on different systems, this should be
-    called on any filenames passed to the HDF5 library. See the documentation on
-    filenames in h5py for more information.
+
+def ToUnicode(label: Union[bytes, bytearray]) -> str:
+    """Compatibility shim for :rfc:`3490` ``ToUnicode``.
+
+    Delegates to :func:`idna.decode` (IDNA 2008). Provided to ease porting
+    of code written against the legacy :mod:`encodings.idna` API; new code
+    should call :func:`idna.decode` directly.
+
+    :param label: The label or domain to decode.
+    :returns: The decoded Unicode form.
     """
-    filename = fspath(filename)
-    if sys.platform == "win32":
-        if isinstance(filename, str):
-            return filename.encode(WINDOWS_ENCODING, "strict")
-        return filename
-    return fsencode(filename)
+    return decode(label)
 
 
-def filename_decode(filename):
+def nameprep(s: Any) -> None:
+    """Stub for :rfc:`3491` Nameprep, which is not used by IDNA 2008.
+
+    IDNA 2008 (:rfc:`5891`) replaces Nameprep with the per-codepoint
+    validity classes from :rfc:`5892`; this function exists only to
+    return a clear error if legacy code attempts to call it.
+
+    :raises NotImplementedError: Always.
     """
-    Decode filename used by HDF5 library.
-
-    Due to how HDF5 handles filenames on different systems, this should be
-    called on any filenames passed from the HDF5 library. See the documentation
-    on filenames in h5py for more information.
-    """
-    if sys.platform == "win32":
-        if isinstance(filename, bytes):
-            return filename.decode(WINDOWS_ENCODING, "strict")
-        elif isinstance(filename, str):
-            return filename
-        else:
-            raise TypeError("expect bytes or str, not %s" % type(filename).__name__)
-    return fsdecode(filename)
+    raise NotImplementedError("IDNA 2008 does not utilise nameprep protocol")

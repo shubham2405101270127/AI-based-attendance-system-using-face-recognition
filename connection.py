@@ -6,15 +6,15 @@ import ssl
 import types
 import typing
 
-from .._backends.auto import AutoBackend
-from .._backends.base import SOCKET_OPTION, AsyncNetworkBackend, AsyncNetworkStream
+from .._backends.sync import SyncBackend
+from .._backends.base import SOCKET_OPTION, NetworkBackend, NetworkStream
 from .._exceptions import ConnectError, ConnectTimeout
 from .._models import Origin, Request, Response
 from .._ssl import default_ssl_context
-from .._synchronization import AsyncLock
+from .._synchronization import Lock
 from .._trace import Trace
-from .http11 import AsyncHTTP11Connection
-from .interfaces import AsyncConnectionInterface
+from .http11 import HTTP11Connection
+from .interfaces import ConnectionInterface
 
 RETRIES_BACKOFF_FACTOR = 0.5  # 0s, 0.5s, 1s, 2s, 4s, etc.
 
@@ -35,7 +35,7 @@ def exponential_backoff(factor: float) -> typing.Iterator[float]:
         yield factor * 2**n
 
 
-class AsyncHTTPConnection(AsyncConnectionInterface):
+class HTTPConnection(ConnectionInterface):
     def __init__(
         self,
         origin: Origin,
@@ -46,7 +46,7 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
         retries: int = 0,
         local_address: str | None = None,
         uds: str | None = None,
-        network_backend: AsyncNetworkBackend | None = None,
+        network_backend: NetworkBackend | None = None,
         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
     ) -> None:
         self._origin = origin
@@ -58,24 +58,24 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
         self._local_address = local_address
         self._uds = uds
 
-        self._network_backend: AsyncNetworkBackend = (
-            AutoBackend() if network_backend is None else network_backend
+        self._network_backend: NetworkBackend = (
+            SyncBackend() if network_backend is None else network_backend
         )
-        self._connection: AsyncConnectionInterface | None = None
+        self._connection: ConnectionInterface | None = None
         self._connect_failed: bool = False
-        self._request_lock = AsyncLock()
+        self._request_lock = Lock()
         self._socket_options = socket_options
 
-    async def handle_async_request(self, request: Request) -> Response:
+    def handle_request(self, request: Request) -> Response:
         if not self.can_handle_request(request.url.origin):
             raise RuntimeError(
                 f"Attempted to send request to {request.url.origin} on connection to {self._origin}"
             )
 
         try:
-            async with self._request_lock:
+            with self._request_lock:
                 if self._connection is None:
-                    stream = await self._connect(request)
+                    stream = self._connect(request)
 
                     ssl_object = stream.get_extra_info("ssl_object")
                     http2_negotiated = (
@@ -83,15 +83,15 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
                         and ssl_object.selected_alpn_protocol() == "h2"
                     )
                     if http2_negotiated or (self._http2 and not self._http1):
-                        from .http2 import AsyncHTTP2Connection
+                        from .http2 import HTTP2Connection
 
-                        self._connection = AsyncHTTP2Connection(
+                        self._connection = HTTP2Connection(
                             origin=self._origin,
                             stream=stream,
                             keepalive_expiry=self._keepalive_expiry,
                         )
                     else:
-                        self._connection = AsyncHTTP11Connection(
+                        self._connection = HTTP11Connection(
                             origin=self._origin,
                             stream=stream,
                             keepalive_expiry=self._keepalive_expiry,
@@ -100,9 +100,9 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
             self._connect_failed = True
             raise exc
 
-        return await self._connection.handle_async_request(request)
+        return self._connection.handle_request(request)
 
-    async def _connect(self, request: Request) -> AsyncNetworkStream:
+    def _connect(self, request: Request) -> NetworkStream:
         timeouts = request.extensions.get("timeout", {})
         sni_hostname = request.extensions.get("sni_hostname", None)
         timeout = timeouts.get("connect", None)
@@ -120,8 +120,8 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
                         "timeout": timeout,
                         "socket_options": self._socket_options,
                     }
-                    async with Trace("connect_tcp", logger, request, kwargs) as trace:
-                        stream = await self._network_backend.connect_tcp(**kwargs)
+                    with Trace("connect_tcp", logger, request, kwargs) as trace:
+                        stream = self._network_backend.connect_tcp(**kwargs)
                         trace.return_value = stream
                 else:
                     kwargs = {
@@ -129,10 +129,10 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
                         "timeout": timeout,
                         "socket_options": self._socket_options,
                     }
-                    async with Trace(
+                    with Trace(
                         "connect_unix_socket", logger, request, kwargs
                     ) as trace:
-                        stream = await self._network_backend.connect_unix_socket(
+                        stream = self._network_backend.connect_unix_socket(
                             **kwargs
                         )
                         trace.return_value = stream
@@ -152,8 +152,8 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
                         or self._origin.host.decode("ascii"),
                         "timeout": timeout,
                     }
-                    async with Trace("start_tls", logger, request, kwargs) as trace:
-                        stream = await stream.start_tls(**kwargs)
+                    with Trace("start_tls", logger, request, kwargs) as trace:
+                        stream = stream.start_tls(**kwargs)
                         trace.return_value = stream
                 return stream
             except (ConnectError, ConnectTimeout):
@@ -161,16 +161,16 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
                     raise
                 retries_left -= 1
                 delay = next(delays)
-                async with Trace("retry", logger, request, kwargs) as trace:
-                    await self._network_backend.sleep(delay)
+                with Trace("retry", logger, request, kwargs) as trace:
+                    self._network_backend.sleep(delay)
 
     def can_handle_request(self, origin: Origin) -> bool:
         return origin == self._origin
 
-    async def aclose(self) -> None:
+    def close(self) -> None:
         if self._connection is not None:
-            async with Trace("close", logger, None, {}):
-                await self._connection.aclose()
+            with Trace("close", logger, None, {}):
+                self._connection.close()
 
     def is_available(self) -> bool:
         if self._connection is None:
@@ -210,13 +210,13 @@ class AsyncHTTPConnection(AsyncConnectionInterface):
     # These context managers are not used in the standard flow, but are
     # useful for testing or working with connection instances directly.
 
-    async def __aenter__(self) -> AsyncHTTPConnection:
+    def __enter__(self) -> HTTPConnection:
         return self
 
-    async def __aexit__(
+    def __exit__(
         self,
         exc_type: type[BaseException] | None = None,
         exc_value: BaseException | None = None,
         traceback: types.TracebackType | None = None,
     ) -> None:
-        await self.aclose()
+        self.close()
