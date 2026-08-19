@@ -1,23 +1,86 @@
-# built-in dependencies
-import os
+import re
+from abc import ABCMeta, abstractmethod
+from typing import Iterator, Mapping, Optional, Pattern
 
-# project dependencies
-from deepface.modules.database.inventory import database_inventory
+_posix_variable: Pattern[str] = re.compile(
+    r"""
+    \$\{
+        (?P<name>[^\}:]*)
+        (?::-
+            (?P<default>[^\}]*)
+        )?
+    \}
+    """,
+    re.VERBOSE,
+)
 
 
-# pylint: disable=too-few-public-methods
-class Variables:
-    def __init__(self) -> None:
-        self.database_type = os.getenv("DEEPFACE_DATABASE_TYPE", "postgres").lower()
+class Atom(metaclass=ABCMeta):
+    def __ne__(self, other: object) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
 
-        if database_inventory.get(self.database_type) is None:
-            raise ValueError(f"Unsupported database type: {self.database_type}")
+    @abstractmethod
+    def resolve(self, env: Mapping[str, Optional[str]]) -> str: ...
 
-        connection_string = database_inventory[self.database_type]["connection_string"]
-        conection_details = os.getenv(connection_string)
-        self.conection_details = os.getenv("DEEPFACE_CONNECTION_DETAILS") or conection_details
 
-        self.face_recognition_models = os.getenv("DEEPFACE_FACE_RECOGNITION_MODELS")
-        self.face_detection_models = os.getenv("DEEPFACE_FACE_DETECTION_MODELS")
+class Literal(Atom):
+    def __init__(self, value: str) -> None:
+        self.value = value
 
-        self.auth_token = os.getenv("DEEPFACE_AUTH_TOKEN")
+    def __repr__(self) -> str:
+        return f"Literal(value={self.value})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return self.value == other.value
+
+    def __hash__(self) -> int:
+        return hash((self.__class__, self.value))
+
+    def resolve(self, env: Mapping[str, Optional[str]]) -> str:
+        return self.value
+
+
+class Variable(Atom):
+    def __init__(self, name: str, default: Optional[str]) -> None:
+        self.name = name
+        self.default = default
+
+    def __repr__(self) -> str:
+        return f"Variable(name={self.name}, default={self.default})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        return (self.name, self.default) == (other.name, other.default)
+
+    def __hash__(self) -> int:
+        return hash((self.__class__, self.name, self.default))
+
+    def resolve(self, env: Mapping[str, Optional[str]]) -> str:
+        default = self.default if self.default is not None else ""
+        result = env.get(self.name, default)
+        return result if result is not None else ""
+
+
+def parse_variables(value: str) -> Iterator[Atom]:
+    cursor = 0
+
+    for match in _posix_variable.finditer(value):
+        (start, end) = match.span()
+        name = match["name"]
+        default = match["default"]
+
+        if start > cursor:
+            yield Literal(value=value[cursor:start])
+
+        yield Variable(name=name, default=default)
+        cursor = end
+
+    length = len(value)
+    if cursor < length:
+        yield Literal(value=value[cursor:length])

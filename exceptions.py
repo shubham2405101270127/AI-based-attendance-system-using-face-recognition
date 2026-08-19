@@ -1,61 +1,13 @@
-# pylint: disable=unnecessary-pass
-
-
-class ImgNotFound(ValueError):
-    """Raised when the input image is not found or cannot be loaded."""
-
+class EmailNotValidError(ValueError):
+    """Parent class of all exceptions raised by this module."""
     pass
 
 
-class PathNotFound(ValueError):
-    """Raised when the input path is not found."""
-
+class EmailSyntaxError(EmailNotValidError):
+    """Exception raised when an email address fails validation because of its form."""
     pass
 
 
-class FaceNotDetected(ValueError):
-    """Raised when no face is detected in the input image."""
-
-    pass
-
-
-class SpoofDetected(ValueError):
-    """Raised when a spoofed face is detected in the input image."""
-
-    pass
-
-
-class EmptyDatasource(ValueError):
-    """Raised when the provided data source is empty."""
-
-    pass
-
-
-class DimensionMismatchError(ValueError):
-    """Raised when the dimensions of the input do not match the expected dimensions."""
-
-    pass
-
-
-class InvalidEmbeddingsShapeError(ValueError):
-    """Raised when the shape of the embeddings is invalid."""
-
-    pass
-
-
-class DataTypeError(ValueError):
-    """Raised when the input data type is incorrect."""
-
-    pass
-
-
-class UnimplementedError(ValueError):
-    """Raised when a requested feature is not implemented."""
-
-    pass
-
-
-class DuplicateEntryError(ValueError):
-    """Raised when a duplicate entry is found in the database."""
-
+class EmailUndeliverableError(EmailNotValidError):
+    """Exception raised when an email address fails validation because its domain name does not appear deliverable."""
     pass
