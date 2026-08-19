@@ -15,57 +15,10 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""Class ANY (generic) rdata type classes."""
+import dns.immutable
+import dns.rdtypes.dsbase
 
-__all__ = [
-    "AFSDB",
-    "AMTRELAY",
-    "AVC",
-    "CAA",
-    "CDNSKEY",
-    "CDS",
-    "CERT",
-    "CNAME",
-    "CSYNC",
-    "DLV",
-    "DNAME",
-    "DNSKEY",
-    "DS",
-    "DSYNC",
-    "EUI48",
-    "EUI64",
-    "GPOS",
-    "HINFO",
-    "HIP",
-    "ISDN",
-    "L32",
-    "L64",
-    "LOC",
-    "LP",
-    "MX",
-    "NID",
-    "NINFO",
-    "NS",
-    "NSEC",
-    "NSEC3",
-    "NSEC3PARAM",
-    "OPENPGPKEY",
-    "OPT",
-    "PTR",
-    "RESINFO",
-    "RP",
-    "RRSIG",
-    "RT",
-    "SMIMEA",
-    "SOA",
-    "SPF",
-    "SSHFP",
-    "TKEY",
-    "TLSA",
-    "TSIG",
-    "TXT",
-    "URI",
-    "WALLET",
-    "X25",
-    "ZONEMD",
-]
+
+@dns.immutable.immutable
+class DS(dns.rdtypes.dsbase.DSBase):
+    """DS record"""

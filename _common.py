@@ -1,419 +1,344 @@
-from six import PY2
+# Copyright (C) Dnspython Contributors, see LICENSE for text of ISC license
 
-from functools import wraps
+import base64
+import copy
+import functools
+import socket
+import struct
+import time
+import urllib.parse
+from typing import Any
 
-from datetime import datetime, timedelta, tzinfo
+import aioquic.h3.connection  # type: ignore
+import aioquic.quic.configuration  # type: ignore
+import aioquic.quic.connection  # type: ignore
 
+import dns._tls_util
+import dns.inet
 
-ZERO = timedelta(0)
+QUIC_MAX_DATAGRAM = 2048
+MAX_SESSION_TICKETS = 8
+# If we hit the max sessions limit we will delete this many of the oldest connections.
+# The value must be a integer > 0 and <= MAX_SESSION_TICKETS.
+SESSIONS_TO_DELETE = MAX_SESSION_TICKETS // 4
 
-__all__ = ['tzname_in_python2', 'enfold']
 
+class UnexpectedEOF(Exception):
+    pass
 
-def tzname_in_python2(namefunc):
-    """Change unicode output into bytestrings in Python 2
 
-    tzname() API changed in Python 3. It used to return bytes, but was changed
-    to unicode strings
-    """
-    if PY2:
-        @wraps(namefunc)
-        def adjust_encoding(*args, **kwargs):
-            name = namefunc(*args, **kwargs)
-            if name is not None:
-                name = name.encode()
-
-            return name
-
-        return adjust_encoding
-    else:
-        return namefunc
-
-
-# The following is adapted from Alexander Belopolsky's tz library
-# https://github.com/abalkin/tz
-if hasattr(datetime, 'fold'):
-    # This is the pre-python 3.6 fold situation
-    def enfold(dt, fold=1):
-        """
-        Provides a unified interface for assigning the ``fold`` attribute to
-        datetimes both before and after the implementation of PEP-495.
-
-        :param fold:
-            The value for the ``fold`` attribute in the returned datetime. This
-            should be either 0 or 1.
-
-        :return:
-            Returns an object for which ``getattr(dt, 'fold', 0)`` returns
-            ``fold`` for all versions of Python. In versions prior to
-            Python 3.6, this is a ``_DatetimeWithFold`` object, which is a
-            subclass of :py:class:`datetime.datetime` with the ``fold``
-            attribute added, if ``fold`` is 1.
-
-        .. versionadded:: 2.6.0
-        """
-        return dt.replace(fold=fold)
-
-else:
-    class _DatetimeWithFold(datetime):
-        """
-        This is a class designed to provide a PEP 495-compliant interface for
-        Python versions before 3.6. It is used only for dates in a fold, so
-        the ``fold`` attribute is fixed at ``1``.
-
-        .. versionadded:: 2.6.0
-        """
-        __slots__ = ()
-
-        def replace(self, *args, **kwargs):
-            """
-            Return a datetime with the same attributes, except for those
-            attributes given new values by whichever keyword arguments are
-            specified. Note that tzinfo=None can be specified to create a naive
-            datetime from an aware datetime with no conversion of date and time
-            data.
-
-            This is reimplemented in ``_DatetimeWithFold`` because pypy3 will
-            return a ``datetime.datetime`` even if ``fold`` is unchanged.
-            """
-            argnames = (
-                'year', 'month', 'day', 'hour', 'minute', 'second',
-                'microsecond', 'tzinfo'
-            )
-
-            for arg, argname in zip(args, argnames):
-                if argname in kwargs:
-                    raise TypeError('Duplicate argument: {}'.format(argname))
-
-                kwargs[argname] = arg
-
-            for argname in argnames:
-                if argname not in kwargs:
-                    kwargs[argname] = getattr(self, argname)
-
-            dt_class = self.__class__ if kwargs.get('fold', 1) else datetime
-
-            return dt_class(**kwargs)
-
-        @property
-        def fold(self):
-            return 1
-
-    def enfold(dt, fold=1):
-        """
-        Provides a unified interface for assigning the ``fold`` attribute to
-        datetimes both before and after the implementation of PEP-495.
-
-        :param fold:
-            The value for the ``fold`` attribute in the returned datetime. This
-            should be either 0 or 1.
-
-        :return:
-            Returns an object for which ``getattr(dt, 'fold', 0)`` returns
-            ``fold`` for all versions of Python. In versions prior to
-            Python 3.6, this is a ``_DatetimeWithFold`` object, which is a
-            subclass of :py:class:`datetime.datetime` with the ``fold``
-            attribute added, if ``fold`` is 1.
-
-        .. versionadded:: 2.6.0
-        """
-        if getattr(dt, 'fold', 0) == fold:
-            return dt
-
-        args = dt.timetuple()[:6]
-        args += (dt.microsecond, dt.tzinfo)
-
-        if fold:
-            return _DatetimeWithFold(*args)
-        else:
-            return datetime(*args)
-
-
-def _validate_fromutc_inputs(f):
-    """
-    The CPython version of ``fromutc`` checks that the input is a ``datetime``
-    object and that ``self`` is attached as its ``tzinfo``.
-    """
-    @wraps(f)
-    def fromutc(self, dt):
-        if not isinstance(dt, datetime):
-            raise TypeError("fromutc() requires a datetime argument")
-        if dt.tzinfo is not self:
-            raise ValueError("dt.tzinfo is not self")
-
-        return f(self, dt)
-
-    return fromutc
-
-
-class _tzinfo(tzinfo):
-    """
-    Base class for all ``dateutil`` ``tzinfo`` objects.
-    """
-
-    def is_ambiguous(self, dt):
-        """
-        Whether or not the "wall time" of a given datetime is ambiguous in this
-        zone.
-
-        :param dt:
-            A :py:class:`datetime.datetime`, naive or time zone aware.
-
-
-        :return:
-            Returns ``True`` if ambiguous, ``False`` otherwise.
-
-        .. versionadded:: 2.6.0
-        """
-
-        dt = dt.replace(tzinfo=self)
-
-        wall_0 = enfold(dt, fold=0)
-        wall_1 = enfold(dt, fold=1)
-
-        same_offset = wall_0.utcoffset() == wall_1.utcoffset()
-        same_dt = wall_0.replace(tzinfo=None) == wall_1.replace(tzinfo=None)
-
-        return same_dt and not same_offset
-
-    def _fold_status(self, dt_utc, dt_wall):
-        """
-        Determine the fold status of a "wall" datetime, given a representation
-        of the same datetime as a (naive) UTC datetime. This is calculated based
-        on the assumption that ``dt.utcoffset() - dt.dst()`` is constant for all
-        datetimes, and that this offset is the actual number of hours separating
-        ``dt_utc`` and ``dt_wall``.
-
-        :param dt_utc:
-            Representation of the datetime as UTC
-
-        :param dt_wall:
-            Representation of the datetime as "wall time". This parameter must
-            either have a `fold` attribute or have a fold-naive
-            :class:`datetime.tzinfo` attached, otherwise the calculation may
-            fail.
-        """
-        if self.is_ambiguous(dt_wall):
-            delta_wall = dt_wall - dt_utc
-            _fold = int(delta_wall == (dt_utc.utcoffset() - dt_utc.dst()))
-        else:
-            _fold = 0
-
-        return _fold
-
-    def _fold(self, dt):
-        return getattr(dt, 'fold', 0)
-
-    def _fromutc(self, dt):
-        """
-        Given a timezone-aware datetime in a given timezone, calculates a
-        timezone-aware datetime in a new timezone.
-
-        Since this is the one time that we *know* we have an unambiguous
-        datetime object, we take this opportunity to determine whether the
-        datetime is ambiguous and in a "fold" state (e.g. if it's the first
-        occurrence, chronologically, of the ambiguous datetime).
-
-        :param dt:
-            A timezone-aware :class:`datetime.datetime` object.
-        """
-
-        # Re-implement the algorithm from Python's datetime.py
-        dtoff = dt.utcoffset()
-        if dtoff is None:
-            raise ValueError("fromutc() requires a non-None utcoffset() "
-                             "result")
-
-        # The original datetime.py code assumes that `dst()` defaults to
-        # zero during ambiguous times. PEP 495 inverts this presumption, so
-        # for pre-PEP 495 versions of python, we need to tweak the algorithm.
-        dtdst = dt.dst()
-        if dtdst is None:
-            raise ValueError("fromutc() requires a non-None dst() result")
-        delta = dtoff - dtdst
-
-        dt += delta
-        # Set fold=1 so we can default to being in the fold for
-        # ambiguous dates.
-        dtdst = enfold(dt, fold=1).dst()
-        if dtdst is None:
-            raise ValueError("fromutc(): dt.dst gave inconsistent "
-                             "results; cannot convert")
-        return dt + dtdst
-
-    @_validate_fromutc_inputs
-    def fromutc(self, dt):
-        """
-        Given a timezone-aware datetime in a given timezone, calculates a
-        timezone-aware datetime in a new timezone.
-
-        Since this is the one time that we *know* we have an unambiguous
-        datetime object, we take this opportunity to determine whether the
-        datetime is ambiguous and in a "fold" state (e.g. if it's the first
-        occurrence, chronologically, of the ambiguous datetime).
-
-        :param dt:
-            A timezone-aware :class:`datetime.datetime` object.
-        """
-        dt_wall = self._fromutc(dt)
-
-        # Calculate the fold status given the two datetimes.
-        _fold = self._fold_status(dt, dt_wall)
-
-        # Set the default fold value for ambiguous dates
-        return enfold(dt_wall, fold=_fold)
-
-
-class tzrangebase(_tzinfo):
-    """
-    This is an abstract base class for time zones represented by an annual
-    transition into and out of DST. Child classes should implement the following
-    methods:
-
-        * ``__init__(self, *args, **kwargs)``
-        * ``transitions(self, year)`` - this is expected to return a tuple of
-          datetimes representing the DST on and off transitions in standard
-          time.
-
-    A fully initialized ``tzrangebase`` subclass should also provide the
-    following attributes:
-        * ``hasdst``: Boolean whether or not the zone uses DST.
-        * ``_dst_offset`` / ``_std_offset``: :class:`datetime.timedelta` objects
-          representing the respective UTC offsets.
-        * ``_dst_abbr`` / ``_std_abbr``: Strings representing the timezone short
-          abbreviations in DST and STD, respectively.
-        * ``_hasdst``: Whether or not the zone has DST.
-
-    .. versionadded:: 2.6.0
-    """
+class Buffer:
     def __init__(self):
-        raise NotImplementedError('tzrangebase is an abstract base class')
+        self._buffer = b""
+        self._seen_end = False
 
-    def utcoffset(self, dt):
-        isdst = self._isdst(dt)
+    def put(self, data, is_end):
+        if self._seen_end:
+            return
+        self._buffer += data
+        if is_end:
+            self._seen_end = True
 
-        if isdst is None:
-            return None
-        elif isdst:
-            return self._dst_offset
+    def have(self, amount):
+        if len(self._buffer) >= amount:
+            return True
+        if self._seen_end:
+            raise UnexpectedEOF
+        return False
+
+    def seen_end(self):
+        return self._seen_end
+
+    def get(self, amount):
+        assert self.have(amount)
+        data = self._buffer[:amount]
+        self._buffer = self._buffer[amount:]
+        return data
+
+    def get_all(self):
+        assert self.seen_end()
+        data = self._buffer
+        self._buffer = b""
+        return data
+
+
+class BaseQuicStream:
+    def __init__(self, connection, stream_id):
+        self._connection = connection
+        self._stream_id = stream_id
+        self._buffer = Buffer()
+        self._expecting = 0
+        self._headers = None
+        self._trailers = None
+
+    def id(self):
+        return self._stream_id
+
+    def headers(self):
+        return self._headers
+
+    def trailers(self):
+        return self._trailers
+
+    def _expiration_from_timeout(self, timeout):
+        if timeout is not None:
+            expiration = time.time() + timeout
         else:
-            return self._std_offset
+            expiration = None
+        return expiration
 
-    def dst(self, dt):
-        isdst = self._isdst(dt)
-
-        if isdst is None:
-            return None
-        elif isdst:
-            return self._dst_base_offset
+    def _timeout_from_expiration(self, expiration):
+        if expiration is not None:
+            timeout = max(expiration - time.time(), 0.0)
         else:
-            return ZERO
+            timeout = None
+        return timeout
 
-    @tzname_in_python2
-    def tzname(self, dt):
-        if self._isdst(dt):
-            return self._dst_abbr
+    # Subclass must implement receive() as sync / async and which returns a message
+    # or raises.
+
+    # Subclass must implement send() as sync / async and which takes a message and
+    # an EOF indicator.
+
+    def send_h3(self, url, datagram, post=True):
+        if not self._connection.is_h3():
+            raise SyntaxError("cannot send H3 to a non-H3 connection")
+        url_parts = urllib.parse.urlparse(url)
+        path = url_parts.path.encode()
+        if post:
+            method = b"POST"
         else:
-            return self._std_abbr
+            method = b"GET"
+            path += b"?dns=" + base64.urlsafe_b64encode(datagram).rstrip(b"=")
+        headers = [
+            (b":method", method),
+            (b":scheme", url_parts.scheme.encode()),
+            (b":authority", url_parts.netloc.encode()),
+            (b":path", path),
+            (b"accept", b"application/dns-message"),
+        ]
+        if post:
+            headers.extend(
+                [
+                    (b"content-type", b"application/dns-message"),
+                    (b"content-length", str(len(datagram)).encode()),
+                ]
+            )
+        self._connection.send_headers(self._stream_id, headers, not post)
+        if post:
+            self._connection.send_data(self._stream_id, datagram, True)
 
-    def fromutc(self, dt):
-        """ Given a datetime in UTC, return local time """
-        if not isinstance(dt, datetime):
-            raise TypeError("fromutc() requires a datetime argument")
+    def _encapsulate(self, datagram):
+        if self._connection.is_h3():
+            return datagram
+        l = len(datagram)
+        return struct.pack("!H", l) + datagram
 
-        if dt.tzinfo is not self:
-            raise ValueError("dt.tzinfo is not self")
+    def _common_add_input(self, data, is_end):
+        self._buffer.put(data, is_end)
+        try:
+            return (
+                self._expecting > 0 and self._buffer.have(self._expecting)
+            ) or self._buffer.seen_end
+        except UnexpectedEOF:
+            return True
 
-        # Get transitions - if there are none, fixed offset
-        transitions = self.transitions(dt.year)
-        if transitions is None:
-            return dt + self.utcoffset(dt)
+    def _close(self):
+        self._connection.close_stream(self._stream_id)
+        self._buffer.put(b"", True)  # send EOF in case we haven't seen it.
 
-        # Get the transition times in UTC
-        dston, dstoff = transitions
 
-        dston -= self._std_offset
-        dstoff -= self._std_offset
-
-        utc_transitions = (dston, dstoff)
-        dt_utc = dt.replace(tzinfo=None)
-
-        isdst = self._naive_isdst(dt_utc, utc_transitions)
-
-        if isdst:
-            dt_wall = dt + self._dst_offset
+class BaseQuicConnection:
+    def __init__(
+        self,
+        connection,
+        address,
+        port,
+        source=None,
+        source_port=0,
+        manager=None,
+    ):
+        self._done = False
+        self._connection = connection
+        self._address = address
+        self._port = port
+        self._closed = False
+        self._manager = manager
+        self._streams = {}
+        if manager is not None and manager.is_h3():
+            self._h3_conn = aioquic.h3.connection.H3Connection(connection, False)
         else:
-            dt_wall = dt + self._std_offset
-
-        _fold = int(not isdst and self.is_ambiguous(dt_wall))
-
-        return enfold(dt_wall, fold=_fold)
-
-    def is_ambiguous(self, dt):
-        """
-        Whether or not the "wall time" of a given datetime is ambiguous in this
-        zone.
-
-        :param dt:
-            A :py:class:`datetime.datetime`, naive or time zone aware.
-
-
-        :return:
-            Returns ``True`` if ambiguous, ``False`` otherwise.
-
-        .. versionadded:: 2.6.0
-        """
-        if not self.hasdst:
-            return False
-
-        start, end = self.transitions(dt.year)
-
-        dt = dt.replace(tzinfo=None)
-        return (end <= dt < end + self._dst_base_offset)
-
-    def _isdst(self, dt):
-        if not self.hasdst:
-            return False
-        elif dt is None:
-            return None
-
-        transitions = self.transitions(dt.year)
-
-        if transitions is None:
-            return False
-
-        dt = dt.replace(tzinfo=None)
-
-        isdst = self._naive_isdst(dt, transitions)
-
-        # Handle ambiguous dates
-        if not isdst and self.is_ambiguous(dt):
-            return not self._fold(dt)
+            self._h3_conn = None
+        self._af = dns.inet.af_for_address(address)
+        self._peer = dns.inet.low_level_address_tuple((address, port))
+        if source is None and source_port != 0:
+            if self._af == socket.AF_INET:
+                source = "0.0.0.0"
+            elif self._af == socket.AF_INET6:
+                source = "::"
+            else:
+                raise NotImplementedError
+        if source:
+            self._source = (source, source_port)
         else:
-            return isdst
+            self._source = None
 
-    def _naive_isdst(self, dt, transitions):
-        dston, dstoff = transitions
+    def is_h3(self):
+        return self._h3_conn is not None
 
-        dt = dt.replace(tzinfo=None)
+    def close_stream(self, stream_id):
+        del self._streams[stream_id]
 
-        if dston < dstoff:
-            isdst = dston <= dt < dstoff
+    def send_headers(self, stream_id, headers, is_end=False):
+        assert self._h3_conn is not None
+        self._h3_conn.send_headers(stream_id, headers, is_end)
+
+    def send_data(self, stream_id, data, is_end=False):
+        assert self._h3_conn is not None
+        self._h3_conn.send_data(stream_id, data, is_end)
+
+    def _get_timer_values(self, closed_is_special=True):
+        now = time.time()
+        expiration = self._connection.get_timer()
+        if expiration is None:
+            expiration = now + 3600  # arbitrary "big" value
+        interval = max(expiration - now, 0)
+        if self._closed and closed_is_special:
+            # lower sleep interval to avoid a race in the closing process
+            # which can lead to higher latency closing due to sleeping when
+            # we have events.
+            interval = min(interval, 0.05)
+        return (expiration, interval)
+
+    def _handle_timer(self, expiration):
+        now = time.time()
+        if expiration <= now:
+            self._connection.handle_timer(now)
+
+
+class AsyncQuicConnection(BaseQuicConnection):
+    async def make_stream(self, timeout: float | None = None) -> Any:
+        pass
+
+
+class BaseQuicManager:
+    def __init__(
+        self, conf, verify_mode, connection_factory, server_name=None, h3=False
+    ):
+        self._connections = {}
+        self._connection_factory = connection_factory
+        self._session_tickets = {}
+        self._tokens = {}
+        self._h3 = h3
+        if conf is None:
+            verify_path = None
+            if isinstance(verify_mode, str):
+                verify_path = verify_mode
+                verify_mode = True
+            if h3:
+                alpn_protocols = ["h3"]
+            else:
+                alpn_protocols = ["doq", "doq-i03"]
+            conf = aioquic.quic.configuration.QuicConfiguration(
+                alpn_protocols=alpn_protocols,
+                verify_mode=verify_mode,
+                server_name=server_name,
+            )
+            if verify_path is not None:
+                cafile, capath = dns._tls_util.convert_verify_to_cafile_and_capath(
+                    verify_path
+                )
+                conf.load_verify_locations(cafile=cafile, capath=capath)
+        self._conf = conf
+
+    def _connect(
+        self,
+        address,
+        port=853,
+        source=None,
+        source_port=0,
+        want_session_ticket=True,
+        want_token=True,
+    ):
+        connection = self._connections.get((address, port))
+        if connection is not None:
+            return (connection, False)
+        conf = self._conf
+        if want_session_ticket:
+            try:
+                session_ticket = self._session_tickets.pop((address, port))
+                # We found a session ticket, so make a configuration that uses it.
+                conf = copy.copy(conf)
+                conf.session_ticket = session_ticket
+            except KeyError:
+                # No session ticket.
+                pass
+            # Whether or not we found a session ticket, we want a handler to save
+            # one.
+            session_ticket_handler = functools.partial(
+                self.save_session_ticket, address, port
+            )
         else:
-            isdst = not dstoff <= dt < dston
+            session_ticket_handler = None
+        if want_token:
+            try:
+                token = self._tokens.pop((address, port))
+                # We found a token, so make a configuration that uses it.
+                conf = copy.copy(conf)
+                conf.token = token
+            except KeyError:
+                # No token
+                pass
+            # Whether or not we found a token, we want a handler to save # one.
+            token_handler = functools.partial(self.save_token, address, port)
+        else:
+            token_handler = None
 
-        return isdst
+        qconn = aioquic.quic.connection.QuicConnection(
+            configuration=conf,
+            session_ticket_handler=session_ticket_handler,
+            token_handler=token_handler,
+        )
+        lladdress = dns.inet.low_level_address_tuple((address, port))
+        qconn.connect(lladdress, time.time())
+        connection = self._connection_factory(
+            qconn, address, port, source, source_port, self
+        )
+        self._connections[(address, port)] = connection
+        return (connection, True)
 
-    @property
-    def _dst_base_offset(self):
-        return self._dst_offset - self._std_offset
+    def closed(self, address, port):
+        try:
+            del self._connections[(address, port)]
+        except KeyError:
+            pass
 
-    __hash__ = None
+    def is_h3(self):
+        return self._h3
 
-    def __ne__(self, other):
-        return not (self == other)
+    def save_session_ticket(self, address, port, ticket):
+        # We rely on dictionaries keys() being in insertion order here.  We
+        # can't just popitem() as that would be LIFO which is the opposite of
+        # what we want.
+        l = len(self._session_tickets)
+        if l >= MAX_SESSION_TICKETS:
+            keys_to_delete = list(self._session_tickets.keys())[0:SESSIONS_TO_DELETE]
+            for key in keys_to_delete:
+                del self._session_tickets[key]
+        self._session_tickets[(address, port)] = ticket
 
-    def __repr__(self):
-        return "%s(...)" % self.__class__.__name__
+    def save_token(self, address, port, token):
+        # We rely on dictionaries keys() being in insertion order here.  We
+        # can't just popitem() as that would be LIFO which is the opposite of
+        # what we want.
+        l = len(self._tokens)
+        if l >= MAX_SESSION_TICKETS:
+            keys_to_delete = list(self._tokens.keys())[0:SESSIONS_TO_DELETE]
+            for key in keys_to_delete:
+                del self._tokens[key]
+        self._tokens[(address, port)] = token
 
-    __reduce__ = object.__reduce__
+
+class AsyncQuicManager(BaseQuicManager):
+    def connect(self, address, port=853, source=None, source_port=0):
+        raise NotImplementedError

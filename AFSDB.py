@@ -15,57 +15,31 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""Class ANY (generic) rdata type classes."""
+import dns.immutable
+import dns.rdtypes.mxbase
 
-__all__ = [
-    "AFSDB",
-    "AMTRELAY",
-    "AVC",
-    "CAA",
-    "CDNSKEY",
-    "CDS",
-    "CERT",
-    "CNAME",
-    "CSYNC",
-    "DLV",
-    "DNAME",
-    "DNSKEY",
-    "DS",
-    "DSYNC",
-    "EUI48",
-    "EUI64",
-    "GPOS",
-    "HINFO",
-    "HIP",
-    "ISDN",
-    "L32",
-    "L64",
-    "LOC",
-    "LP",
-    "MX",
-    "NID",
-    "NINFO",
-    "NS",
-    "NSEC",
-    "NSEC3",
-    "NSEC3PARAM",
-    "OPENPGPKEY",
-    "OPT",
-    "PTR",
-    "RESINFO",
-    "RP",
-    "RRSIG",
-    "RT",
-    "SMIMEA",
-    "SOA",
-    "SPF",
-    "SSHFP",
-    "TKEY",
-    "TLSA",
-    "TSIG",
-    "TXT",
-    "URI",
-    "WALLET",
-    "X25",
-    "ZONEMD",
-]
+
+@dns.immutable.immutable
+class AFSDB(dns.rdtypes.mxbase.UncompressedDowncasingMX):
+    """AFSDB record"""
+
+    # Use the property mechanism to make "subtype" an alias for the
+    # "preference" attribute, and "hostname" an alias for the "exchange"
+    # attribute.
+    #
+    # This lets us inherit the UncompressedMX implementation but lets
+    # the caller use appropriate attribute names for the rdata type.
+    #
+    # We probably lose some performance vs. a cut-and-paste
+    # implementation, but this way we don't copy code, and that's
+    # good.
+
+    @property
+    def subtype(self):
+        "the AFSDB subtype"
+        return self.preference
+
+    @property
+    def hostname(self):
+        "the AFSDB hostname"
+        return self.exchange
