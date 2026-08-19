@@ -1,176 +1,103 @@
-from __future__ import annotations
+# -*- coding: utf-8 -*- #
+# Copyright 2018 Google LLC. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Semantic text objects that are used for styled outputting."""
 
-__all__ = (
-    "TextConnectable",
-    "TextReceiveStream",
-    "TextSendStream",
-    "TextStream",
-)
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import unicode_literals
 
-import codecs
-import sys
-from collections.abc import Callable, Mapping
-from dataclasses import InitVar, dataclass, field
-from typing import Any
-
-from ..abc import (
-    AnyByteReceiveStream,
-    AnyByteSendStream,
-    AnyByteStream,
-    AnyByteStreamConnectable,
-    ObjectReceiveStream,
-    ObjectSendStream,
-    ObjectStream,
-    ObjectStreamConnectable,
-)
-
-if sys.version_info >= (3, 12):
-    from typing import override
-else:
-    from typing_extensions import override
+import enum
 
 
-@dataclass(eq=False)
-class TextReceiveStream(ObjectReceiveStream[str]):
+class TextAttributes(object):
+  """Attributes to use to style text with."""
+
+  def __init__(self, format_str=None, color=None, attrs=None):
+    """Defines a set of attributes for a piece of text.
+
+    Args:
+      format_str: (str), string that will be used to format the text
+        with. For example '[{}]', to enclose text in brackets.
+      color: (Colors), the color the text should be formatted with.
+      attrs: (Attrs), the attributes to apply to text.
     """
-    Stream wrapper that decodes bytes to strings using the given encoding.
+    self._format_str = format_str
+    self._color = color
+    self._attrs = attrs or []
 
-    Decoding is done using :class:`~codecs.IncrementalDecoder` which returns any
-    completely received unicode characters as soon as they come in.
+  @property
+  def format_str(self):
+    return self._format_str
 
-    :param transport_stream: any bytes-based receive stream
-    :param encoding: character encoding to use for decoding bytes to strings (defaults
-        to ``utf-8``)
-    :param errors: handling scheme for decoding errors (defaults to ``strict``; see the
-        `codecs module documentation`_ for a comprehensive list of options)
+  @property
+  def color(self):
+    return self._color
 
-    .. _codecs module documentation:
-        https://docs.python.org/3/library/codecs.html#codec-objects
+  @property
+  def attrs(self):
+    return self._attrs
+
+
+class TypedText(object):
+  """Text with a semantic type that will be used for styling."""
+
+  def __init__(self, texts, text_type=None):
+    """String of text and a corresponding type to use to style that text.
+
+    Args:
+     texts: (list[str]), list of strs or TypedText objects
+       that should be styled using text_type.
+     text_type: (TextTypes), the semantic type of the text that
+       will be used to style text.
     """
+    self.texts = texts
+    self.text_type = text_type
 
-    transport_stream: AnyByteReceiveStream
-    encoding: InitVar[str] = "utf-8"
-    errors: InitVar[str] = "strict"
-    _decoder: codecs.IncrementalDecoder = field(init=False)
+  def __len__(self):
+    length = 0
+    for text in self.texts:
+      length += len(text)
+    return length
 
-    def __post_init__(self, encoding: str, errors: str) -> None:
-        decoder_class = codecs.getincrementaldecoder(encoding)
-        self._decoder = decoder_class(errors=errors)
+  def __add__(self, other):
+    texts = [self, other]
+    return TypedText(texts)
 
-    async def receive(self) -> str:
-        while True:
-            chunk = await self.transport_stream.receive()
-            decoded = self._decoder.decode(chunk)
-            if decoded:
-                return decoded
-
-    async def aclose(self) -> None:
-        await self.transport_stream.aclose()
-        self._decoder.reset()
-
-    @property
-    def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
-        return self.transport_stream.extra_attributes
+  def __radd__(self, other):
+    texts = [other, self]
+    return TypedText(texts)
 
 
-@dataclass(eq=False)
-class TextSendStream(ObjectSendStream[str]):
-    """
-    Sends strings to the wrapped stream as bytes using the given encoding.
+class _TextTypes(enum.Enum):
+  """Text types base class that defines base functionality."""
 
-    :param AnyByteSendStream transport_stream: any bytes-based send stream
-    :param str encoding: character encoding to use for encoding strings to bytes
-        (defaults to ``utf-8``)
-    :param str errors: handling scheme for encoding errors (defaults to ``strict``; see
-        the `codecs module documentation`_ for a comprehensive list of options)
-
-    .. _codecs module documentation:
-        https://docs.python.org/3/library/codecs.html#codec-objects
-    """
-
-    transport_stream: AnyByteSendStream
-    encoding: InitVar[str] = "utf-8"
-    errors: str = "strict"
-    _encoder: Callable[..., tuple[bytes, int]] = field(init=False)
-
-    def __post_init__(self, encoding: str) -> None:
-        self._encoder = codecs.getencoder(encoding)
-
-    async def send(self, item: str) -> None:
-        encoded = self._encoder(item, self.errors)[0]
-        await self.transport_stream.send(encoded)
-
-    async def aclose(self) -> None:
-        await self.transport_stream.aclose()
-
-    @property
-    def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
-        return self.transport_stream.extra_attributes
+  def __call__(self, *args):
+    """Returns a TypedText object using this style."""
+    return TypedText(list(args), self)
 
 
-@dataclass(eq=False)
-class TextStream(ObjectStream[str]):
-    """
-    A bidirectional stream that decodes bytes to strings on receive and encodes strings
-    to bytes on send.
+# TODO: Add more types.
+class TextTypes(_TextTypes):
+  """Defines text types that can be used for styling text."""
+  RESOURCE_NAME = 1
+  URL = 2
+  USER_INPUT = 3
+  COMMAND = 4
+  INFO = 5
+  URI = 6
+  OUTPUT = 7
+  PT_SUCCESS = 8
+  PT_FAILURE = 9
 
-    Extra attributes will be provided from both streams, with the receive stream
-    providing the values in case of a conflict.
-
-    :param AnyByteStream transport_stream: any bytes-based stream
-    :param str encoding: character encoding to use for encoding/decoding strings to/from
-        bytes (defaults to ``utf-8``)
-    :param str errors: handling scheme for encoding errors (defaults to ``strict``; see
-        the `codecs module documentation`_ for a comprehensive list of options)
-
-    .. _codecs module documentation:
-        https://docs.python.org/3/library/codecs.html#codec-objects
-    """
-
-    transport_stream: AnyByteStream
-    encoding: InitVar[str] = "utf-8"
-    errors: InitVar[str] = "strict"
-    _receive_stream: TextReceiveStream = field(init=False)
-    _send_stream: TextSendStream = field(init=False)
-
-    def __post_init__(self, encoding: str, errors: str) -> None:
-        self._receive_stream = TextReceiveStream(
-            self.transport_stream, encoding=encoding, errors=errors
-        )
-        self._send_stream = TextSendStream(
-            self.transport_stream, encoding=encoding, errors=errors
-        )
-
-    async def receive(self) -> str:
-        return await self._receive_stream.receive()
-
-    async def send(self, item: str) -> None:
-        await self._send_stream.send(item)
-
-    async def send_eof(self) -> None:
-        await self.transport_stream.send_eof()
-
-    async def aclose(self) -> None:
-        await self._send_stream.aclose()
-        await self._receive_stream.aclose()
-
-    @property
-    def extra_attributes(self) -> Mapping[Any, Callable[[], Any]]:
-        return {
-            **self._send_stream.extra_attributes,
-            **self._receive_stream.extra_attributes,
-        }
-
-
-class TextConnectable(ObjectStreamConnectable[str]):
-    def __init__(self, connectable: AnyByteStreamConnectable):
-        """
-        :param connectable: the bytestream endpoint to wrap
-
-        """
-        self.connectable = connectable
-
-    @override
-    async def connect(self) -> TextStream:
-        stream = await self.connectable.connect()
-        return TextStream(stream)
