@@ -1,2 +1,6 @@
-class FastAPICLIException(Exception):
+class DownloadError(Exception):
+    pass
+
+
+class FileURLRetrievalError(DownloadError):
     pass

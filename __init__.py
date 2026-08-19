@@ -1,23 +1,7 @@
-from importlib.metadata import PackageNotFoundError, version
+# Protocol Buffers - Google's data interchange format
+# Copyright 2008 Google Inc.  All rights reserved.
+#
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file or at
+# https://developers.google.com/open-source/licenses/bsd
 
-from .decorator import cross_origin
-from .extension import CORS
-
-try:
-    __version__ = version("flask-cors")
-except PackageNotFoundError:  # pragma: no cover - package is not installed
-    __version__ = "unknown"
-
-__all__ = ["CORS", "__version__", "cross_origin"]
-
-# Set default logging handler to avoid "No handler found" warnings.
-import logging
-from logging import NullHandler
-
-# Set initial level to WARN. Users must manually enable logging for
-# flask_cors to see our logging.
-rootlogger = logging.getLogger(__name__)
-rootlogger.addHandler(NullHandler())
-
-if rootlogger.level == logging.NOTSET:
-    rootlogger.setLevel(logging.WARN)
