@@ -1,4 +1,2 @@
-[console_scripts]
-
-[gui_scripts]
-
+[pytest11]
+anyio = anyio.pytest_plugin
