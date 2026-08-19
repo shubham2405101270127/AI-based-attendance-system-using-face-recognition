@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Live Session — AttendAI</title>
+<style>
+:root{--ink:#0d1117;--surface:#f6f8fa;--card:#fff;--accent:#1a56db;--green:#059669;--amber:#d97706;--red:#dc2626;--border:#e2e8f0;--muted:#64748b;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--surface);color:var(--ink)}
+nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;gap:2rem;height:60px;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.logo{font-weight:800;font-size:1.25rem;color:var(--accent)}
+nav a{color:var(--muted);text-decoration:none;font-size:.875rem;font-weight:500;padding:.25rem 0;border-bottom:2px solid transparent}
+nav a:hover,nav a.active{color:var(--accent);border-color:var(--accent)}
+.layout{display:grid;grid-template-columns:1fr 340px;gap:1.5rem;padding:1.5rem 2rem;max-width:1200px;margin:0 auto}
+@media(max-width:900px){.layout{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.panel-head{padding:1rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.panel-head h2{font-size:1rem;font-weight:700}
+.panel-body{padding:1.25rem}
+#videoFeed{width:100%;border-radius:8px;background:#0d1117;min-height:300px;display:block}
+label{display:block;font-size:.75rem;font-weight:600;color:var(--muted);margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.04em}
+
+/* Select wrapper with arrow */
+.sel-wrap{position:relative;margin-bottom:.2rem}
+.sel-wrap select{width:100%;padding:.55rem .75rem;border:1.5px solid var(--border);border-radius:6px;font-size:.9rem;outline:none;background:#fff;color:var(--ink);appearance:none;cursor:pointer}
+.sel-wrap select:focus{border-color:var(--accent)}
+.sel-wrap select:disabled{background:#f8fafc;color:#94a3b8;cursor:not-allowed}
+.sel-wrap::after{content:'▾';position:absolute;right:.75rem;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--muted);font-size:.85rem}
+
+/* Add-new inline link */
+.add-link{font-size:.78rem;color:var(--accent);cursor:pointer;display:inline-block;margin:.2rem 0 .85rem;user-select:none}
+.add-link:hover{text-decoration:underline}
+
+/* Inline add form */
+.add-form{background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:.85rem;margin-bottom:.85rem;display:none}
+.add-form.open{display:block}
+.add-form input{width:100%;padding:.48rem .65rem;border:1.5px solid var(--border);border-radius:5px;font-size:.85rem;outline:none;margin-bottom:.5rem;background:#fff}
+.add-form input:focus{border-color:var(--accent)}
+.add-form input:last-of-type{margin-bottom:.6rem}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:.4rem;padding:.6rem 1.25rem;border-radius:7px;font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:.15s}
+.btn-green{background:var(--green);color:#fff}.btn-green:hover{background:#047857}
+.btn-red{background:var(--red);color:#fff}.btn-red:hover{background:#b91c1c}
+.btn-blue{background:var(--accent);color:#fff}.btn-blue:hover{background:#1444b8}
+.btn-grey{background:#f1f5f9;color:var(--ink);border:1px solid var(--border)}.btn-grey:hover{background:#e2e8f0}
+.btn-sm{padding:.38rem .8rem;font-size:.8rem}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-full{width:100%;justify-content:center}
+
+/* Status badge */
+#statusBadge{font-size:.75rem;font-weight:700;padding:.25rem .65rem;border-radius:99px;background:#fee2e2;color:#991b1b}
+#statusBadge.live{background:#d1fae5;color:#065f46}
+
+/* Session info strip */
+.session-strip{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:.6rem .9rem;margin-bottom:.85rem;font-size:.8rem;color:#166534;font-weight:500;display:none}
+.session-strip.show{display:block}
+
+/* Attendance list */
+.att-list{max-height:420px;overflow-y:auto}
+.att-item{display:flex;align-items:center;gap:.75rem;padding:.75rem;border-bottom:1px solid var(--border);animation:slideIn .3s ease}
+@keyframes slideIn{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:none}}
+.att-avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#1a56db,#0ea5e9);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:.85rem;flex-shrink:0}
+.att-info .aname{font-size:.875rem;font-weight:600}
+.att-info .ameta{font-size:.75rem;color:var(--muted)}
+.conf-bar{height:4px;background:#e2e8f0;border-radius:2px;margin-top:4px;overflow:hidden}
+.conf-fill{height:100%;background:var(--green);border-radius:2px}
+.empty-att{text-align:center;padding:3rem 1rem;color:var(--muted);font-size:.875rem}
+
+/* Upload zone */
+.upload-zone{border:2px dashed var(--border);border-radius:8px;padding:2rem;text-align:center;cursor:pointer;color:var(--muted);transition:.2s}
+.upload-zone:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Input tabs */
+.input-tabs{display:flex;gap:.25rem;margin-top:.25rem;margin-bottom:1rem}
+.itab{padding:.42rem 1rem;border-radius:6px;font-size:.8rem;font-weight:600;cursor:pointer;background:transparent;border:1.5px solid var(--border);color:var(--muted);transition:.15s}
+.itab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.itab-panel{display:none}.itab-panel.active{display:block}
+
+.session-id-badge{font-family:monospace;font-size:.8rem;background:#f1f5f9;padding:.2rem .5rem;border-radius:4px;color:var(--accent);font-weight:700}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">AttendAI</div>
+  <a href="/">Home</a>
+  <a href="/session" class="active">Live Session</a>
+  <a href="/register">Register</a>
+  <a href="/faculty">Faculty</a>
+  <a href="/dashboard">Dashboard</a>
+</nav>
+
+<div class="layout">
+
+  <!-- LEFT: Feed + setup -->
+  <div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>📷 Recognition Feed</h2>
+        <span id="statusBadge">● IDLE</span>
+      </div>
+      <div class="panel-body">
+
+        <!-- Setup area (hidden once session starts) -->
+        <div id="setupArea">
+
+          <!-- 1. Department -->
+          <label>Department</label>
+          <div class="sel-wrap" style="margin-bottom:.85rem">
+            <select id="deptSel" onchange="onDeptChange()">
+              <option value="">— Select Department —</option>
+            </select>
+          </div>
+
+          <!-- 2. Subject -->
+          <label>Subject</label>
+          <div class="sel-wrap">
+            <select id="subjectSel" disabled>
+              <option value="">— Select Department first —</option>
+            </select>
+          </div>
+          <span class="add-link" id="addSubjectLink" style="display:none"
+                onclick="toggleForm('subjectForm')">+ Add new subject</span>
+          <div class="add-form" id="subjectForm">
+            <input type="text" id="newSubjectName" placeholder="New subject name (e.g. Cloud Computing)">
+            <button class="btn btn-blue btn-sm" onclick="addSubject()">Save Subject</button>
+          </div>
+
+          <!-- 3. Faculty -->
+          <label>Faculty</label>
+          <div class="sel-wrap">
+            <select id="facultySel" disabled>
+              <option value="">— Select Department first —</option>
+            </select>
+          </div>
+          <span class="add-link" id="addFacultyLink" style="display:none"
+                onclick="toggleForm('facultyForm')">+ Add new faculty</span>
+          <div class="add-form" id="facultyForm">
+            <input type="text"  id="newFacultyName"  placeholder="Faculty name (e.g. Dr. Rohit Shah)">
+            <input type="email" id="newFacultyEmail" placeholder="Email (optional)">
+            <button class="btn btn-blue btn-sm" onclick="addFaculty()">Save Faculty</button>
+          </div>
+
+          <!-- Live / Upload tabs -->
+          <div class="input-tabs">
+            <button class="itab active" onclick="switchInputTab('live')">📸 Live Camera</button>
+            <button class="itab"        onclick="switchInputTab('photo')">🖼️ Upload Photo</button>
+          </div>
+
+          <div class="itab-panel active" id="liveTab">
+            <button class="btn btn-green btn-full" onclick="startSession()">▶ Start Live Session</button>
+          </div>
+          <div class="itab-panel" id="photoTab">
+            <div class="upload-zone" onclick="document.getElementById('photoInput').click()">
+              <div style="font-size:2rem">📁</div>
+              <div style="margin-top:.5rem;font-size:.875rem">Click to upload a classroom photo</div>
+              <input type="file" id="photoInput" accept="image/*" style="display:none"
+                     onchange="processPhoto(event)">
+            </div>
+          </div>
+
+        </div><!-- /setupArea -->
+
+        <!-- Live feed (shown after session starts) -->
+        <div id="feedArea" style="display:none">
+          <div class="session-strip show" id="sessionStrip">—</div>
+          <img id="videoFeed" src="" alt="Camera Feed">
+          <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
+            <button class="btn btn-red" onclick="stopSession()">■ End Session</button>
+            <span style="font-size:.8rem;color:var(--muted)">ID:</span>
+            <span class="session-id-badge" id="sessionIdLabel">—</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Attendance list -->
+  <div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>✅ Marked Present</h2>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <span id="countBadge"
+                style="font-size:.8rem;font-weight:700;background:#dbeafe;color:#1e40af;padding:.2rem .6rem;border-radius:99px">
+            0
+          </span>
+          <button class="btn btn-sm btn-grey" id="exportBtn"
+                  onclick="exportCSV()" disabled>↓ CSV</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <div class="att-list" id="attendanceList">
+          <div class="empty-att">Start a session to begin marking attendance.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let sessionId     = null;
+let pollInterval  = null;
+const markedSet   = new Set();
+let currentDept   = '';
+
+// ── Init: load departments ────────────────────────────────────────────────────
+async function init() {
+  try {
+    const r     = await fetch('/api/students/meta/departments');
+    const depts = await r.json();
+    const sel   = document.getElementById('deptSel');
+    sel.innerHTML = '<option value="">— Select Department —</option>';
+    depts.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.code; o.textContent = d.name;
+      sel.appendChild(o);
+    });
+  } catch(e) {
+    console.error('Failed to load departments:', e);
+  }
+}
+
+// ── Dept change → load subjects + faculty ─────────────────────────────────────
+async function onDeptChange() {
+  currentDept = document.getElementById('deptSel').value;
+
+  // Reset downstream selects
+  const ss = document.getElementById('subjectSel');
+  const fs = document.getElementById('facultySel');
+  ss.innerHTML = '<option value="">— Select Subject —</option>';
+  fs.innerHTML = '<option value="">— Select Faculty —</option>';
+  ss.disabled  = true;
+  fs.disabled  = true;
+
+  document.getElementById('addSubjectLink').style.display = 'none';
+  document.getElementById('addFacultyLink').style.display = 'none';
+
+  if (!currentDept) return;
+
+  // Load subjects
+  const rs = await fetch(`/api/students/meta/subjects/${currentDept}`);
+  const subjects = await rs.json();
+  subjects.forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.name; o.textContent = s.name;
+    ss.appendChild(o);
+  });
+  ss.disabled = false;
+  document.getElementById('addSubjectLink').style.display = 'inline';
+
+  // Load faculty
+  const rf = await fetch(`/api/students/meta/faculty/${currentDept}`);
+  const faculty = await rf.json();
+  faculty.forEach(f => {
+    const o = document.createElement('option');
+    o.value = f.faculty_id; o.textContent = f.name;
+    fs.appendChild(o);
+  });
+  fs.disabled = false;
+  document.getElementById('addFacultyLink').style.display = 'inline';
+}
+
+// ── Toggle inline add forms ───────────────────────────────────────────────────
+function toggleForm(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+// ── Add new subject ───────────────────────────────────────────────────────────
+async function addSubject() {
+  const name = document.getElementById('newSubjectName').value.trim();
+  if (!name)        { alert('Enter a subject name.'); return; }
+  if (!currentDept) { alert('Select a department first.'); return; }
+
+  const r = await fetch('/api/students/meta/subjects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, dept_code: currentDept })
+  });
+
+  if (r.ok) {
+    document.getElementById('newSubjectName').value = '';
+    document.getElementById('subjectForm').classList.remove('open');
+    await onDeptChange();                         // reload dropdowns
+    // Auto-select the new subject
+    const ss = document.getElementById('subjectSel');
+    for (const opt of ss.options) {
+      if (opt.value === name) { ss.value = name; break; }
+    }
+    alert(`Subject "${name}" added!`);
+  } else {
+    const d = await r.json();
+    alert(d.detail || 'Failed to add subject.');
+  }
+}
+
+// ── Add new faculty ───────────────────────────────────────────────────────────
+async function addFaculty() {
+  const name  = document.getElementById('newFacultyName').value.trim();
+  const email = document.getElementById('newFacultyEmail').value.trim();
+  if (!name)        { alert('Enter faculty name.'); return; }
+  if (!currentDept) { alert('Select a department first.'); return; }
+
+  const r = await fetch('/api/students/meta/faculty', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, email, dept_code: currentDept })
+  });
+
+  if (r.ok) {
+    const data = await r.json();
+    document.getElementById('newFacultyName').value  = '';
+    document.getElementById('newFacultyEmail').value = '';
+    document.getElementById('facultyForm').classList.remove('open');
+    await onDeptChange();                         // reload dropdowns
+    // Auto-select the new faculty
+    const fs = document.getElementById('facultySel');
+    for (const opt of fs.options) {
+      if (opt.value === data.faculty_id) { fs.value = data.faculty_id; break; }
+    }
+    alert(`Faculty "${name}" added!`);
+  } else {
+    const d = await r.json();
+    alert(d.detail || 'Failed to add faculty.');
+  }
+}
+
+// ── Session start ─────────────────────────────────────────────────────────────
+async function startSession() {
+  const deptCode  = document.getElementById('deptSel').value;
+  const subject   = document.getElementById('subjectSel').value;
+  const facultyId = document.getElementById('facultySel').value;
+
+  if (!deptCode)  { alert('Please select a department.'); return; }
+  if (!subject)   { alert('Please select a subject.'); return; }
+  if (!facultyId) { alert('Please select a faculty member.'); return; }
+
+  const r = await fetch('/api/attendance/session/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dept_code: deptCode, subject, faculty_id: facultyId })
+  });
+
+  if (!r.ok) {
+    const d = await r.json();
+    alert(d.detail || 'Failed to start session.');
+    return;
+  }
+
+  const data = await r.json();
+  sessionId = data.session_id;
+
+  await fetch('/api/video/start-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId })
+  });
+
+  // Build info strip
+  const deptName = document.getElementById('deptSel')
+    .options[document.getElementById('deptSel').selectedIndex].text;
+  const facName = document.getElementById('facultySel')
+    .options[document.getElementById('facultySel').selectedIndex].text;
+  document.getElementById('sessionStrip').textContent =
+    `${deptName}  ·  ${subject}  ·  ${facName}`;
+
+  // Switch to feed view
+  document.getElementById('setupArea').style.display = 'none';
+  document.getElementById('feedArea').style.display  = 'block';
+  document.getElementById('videoFeed').src = '/api/video/stream';
+  document.getElementById('sessionIdLabel').textContent = sessionId;
+  document.getElementById('statusBadge').textContent = '● LIVE';
+  document.getElementById('statusBadge').classList.add('live');
+  document.getElementById('exportBtn').disabled = false;
+
+  pollInterval = setInterval(pollAttendance, 2000);
+}
+
+async function stopSession() {
+  clearInterval(pollInterval);
+  await fetch('/api/video/stop-session', { method: 'POST' });
+  if (sessionId) {
+    await fetch(`/api/attendance/session/${sessionId}/end`, { method: 'POST' });
+  }
+  document.getElementById('videoFeed').src = '';
+  document.getElementById('setupArea').style.display = 'block';
+  document.getElementById('feedArea').style.display  = 'none';
+  document.getElementById('statusBadge').textContent = '● IDLE';
+  document.getElementById('statusBadge').classList.remove('live');
+  sessionId = null;
+  markedSet.clear();
+}
+
+// ── Poll attendance list ──────────────────────────────────────────────────────
+async function pollAttendance() {
+  if (!sessionId) return;
+  const r    = await fetch(`/api/attendance/session/${sessionId}/live`);
+  const data = await r.json();
+  const list = document.getElementById('attendanceList');
+
+  for (const rec of data.records) {
+    if (markedSet.has(rec.student_id)) continue;
+    markedSet.add(rec.student_id);
+
+    const pct  = Math.round((rec.confidence || 0) * 100);
+    const time = new Date(rec.marked_at).toLocaleTimeString();
+    const el   = document.createElement('div');
+    el.className = 'att-item';
+    el.innerHTML = `
+      <div class="att-avatar">${rec.name.charAt(0)}</div>
+      <div class="att-info" style="flex:1">
+        <div class="aname">${rec.name}</div>
+        <div class="ameta">${rec.student_id} · ${time}</div>
+        <div class="conf-bar">
+          <div class="conf-fill" style="width:${pct}%"></div>
+        </div>
+      </div>
+      <span style="font-size:.75rem;color:var(--green);font-weight:700">${pct}%</span>`;
+
+    if (list.querySelector('.empty-att')) list.innerHTML = '';
+    list.prepend(el);
+  }
+  document.getElementById('countBadge').textContent = data.count;
+}
+
+// ── Photo upload mode ─────────────────────────────────────────────────────────
+async function processPhoto(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const deptCode  = document.getElementById('deptSel').value;
+  const subject   = document.getElementById('subjectSel').value;
+  const facultyId = document.getElementById('facultySel').value;
+
+  if (!deptCode || !subject || !facultyId) {
+    alert('Select department, subject and faculty before uploading a photo.');
+    return;
+  }
+
+  // Create session if not already started
+  if (!sessionId) {
+    const r = await fetch('/api/attendance/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dept_code: deptCode, subject, faculty_id: facultyId })
+    });
+    const d = await r.json();
+    sessionId = d.session_id;
+    document.getElementById('sessionIdLabel').textContent = sessionId;
+    document.getElementById('exportBtn').disabled = false;
+  }
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const b64  = e.target.result.split(',')[1];
+    const resp = await fetch('/api/video/process-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, image_b64: b64 })
+    });
+    const data = await resp.json();
+    alert(`Detected ${data.faces_detected} face(s). Check the attendance list.`);
+    await pollAttendance();
+  };
+  reader.readAsDataURL(file);
+}
+
+function switchInputTab(tab) {
+  document.querySelectorAll('.itab')
+    .forEach((t, i) => t.classList.toggle('active', i === (tab === 'live' ? 0 : 1)));
+  document.getElementById('liveTab').classList.toggle('active',  tab === 'live');
+  document.getElementById('photoTab').classList.toggle('active', tab === 'photo');
+}
+
+function exportCSV() {
+  if (sessionId) window.open(`/api/attendance/report/export/${sessionId}`);
+}
+
+init();
+</script>
+</body>
+</html>

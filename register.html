@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Register Student — AttendAI</title>
+<style>
+:root{
+  --ink:#0d1117;--surface:#f6f8fa;--card:#fff;
+  --accent:#1a56db;--green:#059669;--amber:#d97706;
+  --red:#dc2626;--border:#e2e8f0;--muted:#64748b;--radius:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--surface);color:var(--ink)}
+
+/* ── Nav ── */
+nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 2rem;
+    display:flex;align-items:center;gap:2rem;height:60px;position:sticky;top:0;
+    z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.logo{font-weight:800;font-size:1.25rem;color:var(--accent)}
+nav a{color:var(--muted);text-decoration:none;font-size:.875rem;font-weight:500;
+      padding:.25rem 0;border-bottom:2px solid transparent}
+nav a:hover,nav a.active{color:var(--accent);border-color:var(--accent)}
+
+/* ── Layout ── */
+.main{max-width:1100px;margin:0 auto;padding:1.5rem 2rem}
+.page-title{font-size:1.4rem;font-weight:800;margin-bottom:1.5rem}
+
+/* ── Tab bar ── */
+.tab-bar{display:flex;gap:4px;background:var(--card);border:1px solid var(--border);
+         border-radius:10px;padding:4px;width:fit-content;margin-bottom:1.5rem}
+.tab-btn{padding:.45rem 1.25rem;border-radius:7px;font-size:.875rem;font-weight:600;
+         cursor:pointer;border:none;background:transparent;color:var(--muted);transition:.15s}
+.tab-btn.active{background:var(--accent);color:#fff}
+.tab-btn:hover:not(.active){background:var(--surface)}
+.panel{display:none}.panel.active{display:block}
+
+/* ── Grid ── */
+.reg-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+@media(max-width:760px){.reg-grid{grid-template-columns:1fr}}
+
+/* ── Cards ── */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.card-head{padding:1rem 1.25rem;border-bottom:1px solid var(--border);
+           font-size:.95rem;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.card-body{padding:1.25rem}
+
+/* ── Form elements ── */
+label{display:block;font-size:.75rem;font-weight:600;color:var(--muted);
+      margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.04em}
+input[type=text],input[type=tel],input[type=email]{
+  width:100%;padding:.55rem .75rem;border:1.5px solid var(--border);
+  border-radius:6px;font-size:.9rem;outline:none;
+  margin-bottom:.85rem;background:#fff;color:var(--ink)}
+input[type=text]:focus,input[type=tel]:focus,input[type=email]:focus{border-color:var(--accent)}
+
+/* Custom select */
+.sel-wrap{position:relative;margin-bottom:.85rem}
+.sel-wrap select{width:100%;padding:.55rem .75rem;border:1.5px solid var(--border);
+                 border-radius:6px;font-size:.9rem;outline:none;
+                 background:#fff;color:var(--ink);appearance:none;cursor:pointer}
+.sel-wrap select:focus{border-color:var(--accent)}
+.sel-wrap select:disabled{background:#f8fafc;color:#94a3b8;cursor:not-allowed}
+.sel-wrap::after{content:'▾';position:absolute;right:.75rem;top:50%;
+                 transform:translateY(-50%);pointer-events:none;color:var(--muted)}
+
+/* Guardian radio group */
+.radio-group{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:.85rem}
+.radio-opt{display:flex;align-items:center;gap:.4rem;font-size:.9rem;cursor:pointer;
+           padding:.45rem .85rem;border:1.5px solid var(--border);border-radius:6px;
+           transition:.15s;user-select:none}
+.radio-opt:hover{border-color:var(--accent);background:#eff6ff}
+.radio-opt.selected{border-color:var(--accent);background:#eff6ff;color:var(--accent);font-weight:600}
+.radio-opt input[type=radio]{display:none}
+
+/* Enrollment badge */
+.enroll-badge{background:linear-gradient(135deg,#1a56db,#0ea5e9);color:#fff;
+              border-radius:10px;padding:1rem 1.25rem;margin-bottom:1rem;display:none}
+.enroll-badge .eb-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;opacity:.8;margin-bottom:.2rem}
+.enroll-badge .eb-roll{font-size:1.75rem;font-weight:900;letter-spacing:.06em;font-family:monospace}
+.enroll-badge .eb-name{font-size:.85rem;opacity:.85;margin-top:.2rem}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
+     padding:.6rem 1.25rem;border-radius:7px;font-size:.875rem;font-weight:600;
+     cursor:pointer;border:none;transition:.15s;width:100%}
+.btn-blue{background:var(--accent);color:#fff}.btn-blue:hover{background:#1444b8}
+.btn-green{background:var(--green);color:#fff}.btn-green:hover{background:#047857}
+.btn-grey{background:#f1f5f9;color:var(--ink);border:1px solid var(--border)}.btn-grey:hover{background:#e2e8f0}
+.btn-red{background:#fee2e2;color:var(--red);border:1px solid #fecaca}.btn-red:hover{background:#fecaca}
+.btn-sm{padding:.35rem .75rem;font-size:.78rem;width:auto}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* Camera */
+video{width:100%;border-radius:8px;background:#0d1117;display:block;min-height:200px}
+canvas{display:none}
+.capture-btns{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:.75rem}
+.hint{font-size:.78rem;color:var(--muted);text-align:center;margin-top:.5rem;line-height:1.5}
+
+/* Progress */
+.progress-wrap{margin:.75rem 0}
+.progress-label{display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted);margin-bottom:.3rem}
+.progress{height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));
+               border-radius:3px;transition:width .4s}
+
+/* Photo slots */
+.capture-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.4rem;margin-top:.75rem}
+.capture-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;border:2px solid var(--green)}
+.slot{width:100%;aspect-ratio:1;border-radius:6px;border:2px dashed #e2e8f0;
+      background:#f8fafc;display:flex;align-items:center;justify-content:center;
+      color:#cbd5e1;font-size:1.2rem}
+
+/* Student cards */
+.students-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem}
+.student-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+              overflow:hidden;transition:.2s}
+.student-card:hover{box-shadow:0 4px 20px rgba(0,0,0,.09);transform:translateY(-2px)}
+.student-card-head{padding:1rem;display:flex;align-items:center;gap:.75rem;border-bottom:1px solid var(--border)}
+.avatar{width:46px;height:46px;border-radius:50%;
+        background:linear-gradient(135deg,#1a56db,#0ea5e9);
+        display:flex;align-items:center;justify-content:center;
+        color:#fff;font-weight:700;font-size:1.1rem;flex-shrink:0}
+.student-info .sname{font-weight:700;font-size:.95rem}
+.student-info .smeta{font-size:.75rem;color:var(--muted);margin-top:.15rem}
+.student-card-body{padding:.75rem 1rem}
+.stat-row{display:flex;justify-content:space-between;font-size:.8rem;padding:.3rem 0;border-bottom:1px solid #f1f5f9}
+.stat-row:last-child{border:none}
+.stat-row .key{color:var(--muted)}
+.stat-row .val{font-weight:600;text-align:right;max-width:60%;word-break:break-word}
+.student-card-foot{padding:.75rem 1rem;border-top:1px solid var(--border);display:flex;gap:.5rem}
+.photo-pill{font-size:.7rem;font-weight:700;padding:.2rem .5rem;border-radius:99px}
+.photo-ok{background:#d1fae5;color:#065f46}.photo-low{background:#fee2e2;color:#991b1b}
+.roll-tag{font-family:monospace;font-size:.72rem;font-weight:700;padding:.15rem .45rem;
+          border-radius:4px;background:#eff6ff;color:var(--accent);border:1px solid #dbeafe}
+
+/* Empty state */
+.empty-state{text-align:center;padding:3rem 1rem;color:var(--muted);grid-column:1/-1}
+.empty-state .icon{font-size:2.5rem;margin-bottom:.75rem}
+
+/* ── Profile modal ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;
+               display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-box{background:#fff;border-radius:14px;width:100%;max-width:720px;
+           max-height:88vh;display:flex;flex-direction:column;
+           box-shadow:0 20px 60px rgba(0,0,0,.22)}
+.modal-head{padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);
+            display:flex;align-items:center;gap:.85rem;flex-shrink:0}
+.modal-body{overflow-y:auto;flex:1;padding:1.25rem 1.5rem}
+.modal-close{margin-left:auto;background:none;border:none;font-size:1.3rem;
+             cursor:pointer;color:var(--muted);flex-shrink:0}
+.modal-close:hover{color:var(--ink)}
+
+/* Roll number badge in modal */
+.roll-badge{display:inline-block;font-family:monospace;font-size:1.3rem;font-weight:900;
+            letter-spacing:.06em;color:var(--accent);background:#eff6ff;
+            border:2px solid #dbeafe;border-radius:8px;padding:.35rem .85rem}
+
+/* Info grid in modal */
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem .75rem;margin-bottom:.75rem}
+@media(max-width:500px){.info-grid{grid-template-columns:1fr}}
+.info-item .ikey{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.info-item .ival{font-size:.875rem;font-weight:600;margin-top:.15rem;word-break:break-word}
+
+/* Section labels */
+.section-label{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+               color:var(--muted);margin:1rem 0 .5rem;padding-bottom:.3rem;
+               border-bottom:1px solid var(--border)}
+.section-label:first-child{margin-top:0}
+
+/* Attendance table */
+.att-table{width:100%;border-collapse:collapse;font-size:.83rem}
+.att-table th{text-align:left;padding:.5rem .6rem;border-bottom:2px solid var(--border);
+              font-size:.72rem;text-transform:uppercase;color:var(--muted);font-weight:600;
+              position:sticky;top:0;background:#fff}
+.att-table td{padding:.55rem .6rem;border-bottom:1px solid var(--border)}
+.att-table tr:hover td{background:#f8fafc}
+
+/* Delete confirm */
+.confirm-box{background:#fff;border-radius:12px;padding:1.5rem;max-width:400px;width:100%;
+             text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.confirm-box h3{font-size:1rem;font-weight:700;margin-bottom:.5rem}
+.confirm-box p{font-size:.875rem;color:var(--muted);margin-bottom:1.25rem;line-height:1.6}
+.confirm-btns{display:flex;gap:.75rem;justify-content:center}
+.confirm-btns .btn{width:auto;padding:.55rem 1.25rem}
+
+/* Toast */
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:.75rem 1.25rem;border-radius:8px;
+       font-size:.875rem;font-weight:600;color:#fff;opacity:0;transition:.3s;
+       z-index:9999;max-width:320px;line-height:1.4}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">AttendAI</div>
+  <a href="/">Home</a>
+  <a href="/session">Live Session</a>
+  <a href="/register" class="active">Register</a>
+  <a href="/faculty">Faculty</a>
+  <a href="/dashboard">Dashboard</a>
+</nav>
+
+<div class="main">
+  <div class="page-title">👤 Student Management</div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('register')">➕ Register New</button>
+    <button class="tab-btn"        onclick="switchTab('manage')">🗂 Manage Students</button>
+  </div>
+
+  <!-- ══ REGISTER TAB ═══════════════════════════════════════════════════════ -->
+  <div class="panel active" id="tab-register">
+    <div class="reg-grid">
+
+      <!-- Left: form -->
+      <div class="card">
+        <div class="card-head">Student Details</div>
+        <div class="card-body">
+
+          <!-- Enrollment badge (shown after successful registration) -->
+          <div class="enroll-badge" id="enrollBadge">
+            <div class="eb-label">Enrollment Number Assigned</div>
+            <div class="eb-roll" id="enrollRoll">—</div>
+            <div class="eb-name" id="enrollName">—</div>
+          </div>
+
+          <label>Full Name *</label>
+          <input type="text" id="sName" placeholder="e.g. Rahul Patel">
+
+          <label>City *</label>
+          <input type="text" id="sCity" placeholder="e.g. Ahmedabad">
+
+          <label>Department *</label>
+          <div class="sel-wrap">
+            <select id="sDept">
+              <option value="">— Select Department —</option>
+            </select>
+          </div>
+
+          <label>Phone Number *</label>
+          <input type="tel" id="sPhone" placeholder="e.g. 9876543210" maxlength="15">
+
+          <label>Guardian</label>
+          <div class="radio-group" id="guardianGroup">
+            <label class="radio-opt selected" onclick="selectGuardian(this,'Mother')">
+              <input type="radio" name="guardian" value="Mother"> Mother
+            </label>
+            <label class="radio-opt" onclick="selectGuardian(this,'Father')">
+              <input type="radio" name="guardian" value="Father"> Father
+            </label>
+            <label class="radio-opt" onclick="selectGuardian(this,'Guardian')">
+              <input type="radio" name="guardian" value="Guardian"> Guardian
+            </label>
+          </div>
+
+          <!-- Shown only when Guardian is selected -->
+          <div id="guardianRelWrap" style="display:none">
+            <label>Relation to Student *</label>
+            <input type="text" id="sGuardianRel" placeholder="e.g. Uncle, Elder Sibling, Aunt">
+          </div>
+
+          <button class="btn btn-blue" onclick="registerStudent()">
+            → Register &amp; Capture Face
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: face capture -->
+      <div class="card">
+        <div class="card-head">
+          <span>Face Capture</span>
+          <span id="captureStatus" style="font-size:.78rem;font-weight:400;color:var(--muted)">
+            Register a student first
+          </span>
+        </div>
+        <div class="card-body">
+          <video id="webcam" autoplay playsinline muted></video>
+          <canvas id="snapCanvas"></canvas>
+
+          <div class="progress-wrap">
+            <div class="progress-label">
+              <span id="progressText">0 / 4 photos</span>
+              <span id="progressPct">0%</span>
+            </div>
+            <div class="progress">
+              <div class="progress-fill" id="progressFill" style="width:0%"></div>
+            </div>
+          </div>
+
+          <div class="capture-grid" id="captureGrid"></div>
+
+          <div class="capture-btns">
+            <button class="btn btn-green" id="captureBtn" onclick="capturePhoto()" disabled>
+              📷 Capture Photo
+            </button>
+            <button class="btn btn-grey" onclick="startWebcam()">
+              🔄 Start Camera
+            </button>
+          </div>
+          <div class="hint">
+            Capture 4 photos — front, slight left, slight right, slight tilt.<br>
+            Good lighting improves recognition accuracy.
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ MANAGE TAB ════════════════════════════════════════════════════════ -->
+  <div class="panel" id="tab-manage">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+      <div style="font-size:.875rem;color:var(--muted)" id="manageCount">Loading...</div>
+      <button class="btn btn-grey btn-sm" onclick="loadStudents()">↻ Refresh</button>
+    </div>
+    <div class="students-grid" id="studentsGrid">
+      <div class="empty-state"><div class="icon">👥</div>Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ Profile Modal ══════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="profileModal" style="display:none"
+     onclick="if(event.target===this)closeProfile()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="avatar" id="profileAvatar" style="width:52px;height:52px;font-size:1.25rem">?</div>
+      <div>
+        <div style="font-weight:700;font-size:1.05rem" id="profileName">—</div>
+        <div style="font-size:.78rem;color:var(--muted);margin-top:.2rem" id="profileMeta">—</div>
+      </div>
+      <button class="modal-close" onclick="closeProfile()">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <div class="section-label">Enrollment Number</div>
+      <div style="margin-bottom:.75rem">
+        <span class="roll-badge" id="profileRoll">—</span>
+      </div>
+
+      <div class="section-label">Student Details</div>
+      <div class="info-grid" id="profileInfoGrid"></div>
+
+      <div class="section-label">Face Photos</div>
+      <div id="profilePhotos"></div>
+
+      <div class="section-label">Attendance History</div>
+      <table class="att-table">
+        <thead>
+          <tr>
+            <th>Session</th><th>Subject</th><th>Dept</th>
+            <th>Faculty</th><th>Date</th><th>Time</th><th>Conf.</th>
+          </tr>
+        </thead>
+        <tbody id="profileAttBody">
+          <tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--muted)">
+            Loading...
+          </td></tr>
+        </tbody>
+      </table>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══ Delete Confirm Modal ═══════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="deleteModal" style="display:none"
+     onclick="if(event.target===this)closeDelete()">
+  <div class="confirm-box">
+    <h3>Delete Student?</h3>
+    <p id="deleteMsg">This will remove the student and their face data. Attendance history is preserved.</p>
+    <div class="confirm-btns">
+      <button class="btn btn-grey btn-sm" onclick="closeDelete()">Cancel</button>
+      <button class="btn btn-red  btn-sm" id="deleteConfirmBtn" onclick="confirmDelete()">
+        Yes, Delete
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TARGET         = 4;
+let registeredId     = null;
+let captureCount     = 0;
+let stream           = null;
+let lastCaptureTime  = 0;
+let pendingDeleteId  = null;
+let selectedGuardian = 'Mother';
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  resetCaptureGrid();
+  await loadDepts();
+  // default radio selection
+  selectGuardian(
+    document.querySelector('.radio-opt'), 'Mother'
+  );
+}
+
+// ── Load department dropdown ──────────────────────────────────────────────────
+async function loadDepts() {
+  try {
+    const r     = await fetch('/api/students/meta/departments');
+    const depts = await r.json();
+    const sel   = document.getElementById('sDept');
+    sel.innerHTML = '<option value="">— Select Department —</option>';
+    depts.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.code; o.textContent = d.name;
+      sel.appendChild(o);
+    });
+  } catch(e) {
+    toast('Could not load departments. Is the server running?', true);
+  }
+}
+
+// ── Guardian radio ────────────────────────────────────────────────────────────
+function selectGuardian(el, value) {
+  document.querySelectorAll('.radio-opt').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedGuardian = value;
+  document.getElementById('guardianRelWrap').style.display =
+    value === 'Guardian' ? 'block' : 'none';
+  if (value !== 'Guardian') {
+    document.getElementById('sGuardianRel').value = '';
+  }
+}
+
+// ── Webcam ────────────────────────────────────────────────────────────────────
+async function startWebcam() {
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:{ideal:480}, height:{ideal:360}, frameRate:{ideal:15} }
+    });
+    document.getElementById('webcam').srcObject = stream;
+    toast('Camera started.');
+  } catch(e) {
+    toast('Camera access denied: ' + e.message, true);
+  }
+}
+
+// ── Register student ──────────────────────────────────────────────────────────
+async function registerStudent() {
+  const name     = document.getElementById('sName').value.trim();
+  const city     = document.getElementById('sCity').value.trim();
+  const deptCode = document.getElementById('sDept').value;
+  const phone    = document.getElementById('sPhone').value.trim();
+  const gRel     = document.getElementById('sGuardianRel').value.trim();
+
+  // Client-side validation
+  if (!name)     { toast('Full name is required.', true); return; }
+  if (!city)     { toast('City is required.', true); return; }
+  if (!deptCode) { toast('Please select a department.', true); return; }
+  if (!phone)    { toast('Phone number is required.', true); return; }
+  if (selectedGuardian === 'Guardian' && !gRel) {
+    toast('Please enter the guardian relation.', true); return;
+  }
+
+  const r = await fetch('/api/students/register', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, city,
+      dept_code:     deptCode,
+      phone,
+      guardian_type: selectedGuardian,
+      guardian_rel:  gRel,
+    }),
+  });
+
+  const data = await r.json();
+  if (!r.ok) { toast(data.detail || 'Registration failed.', true); return; }
+
+  // Show enrollment badge
+  registeredId = data.student_id;
+  captureCount = 0;
+  lastCaptureTime = 0;
+
+  const badge = document.getElementById('enrollBadge');
+  badge.style.display = 'block';
+  document.getElementById('enrollRoll').textContent = data.student_id;
+  document.getElementById('enrollName').textContent = name;
+
+  resetCaptureGrid();
+  updateProgress();
+
+  const btn = document.getElementById('captureBtn');
+  btn.disabled = false;
+  btn.textContent = '📷 Capture Photo';
+  document.getElementById('captureStatus').textContent =
+    `Capturing for: ${name} (${data.student_id})`;
+
+  toast(`✓ ${name} enrolled as ${data.student_id}! Capture 4 face photos.`);
+  await startWebcam();
+}
+
+// ── Capture photo ─────────────────────────────────────────────────────────────
+async function capturePhoto() {
+  if (!registeredId)            { toast('Register a student first.', true); return; }
+  if (captureCount >= TARGET)   { toast('All photos already captured!'); return; }
+
+  const now = Date.now();
+  if (now - lastCaptureTime < 1500) {
+    toast('Please wait before next capture...', true); return;
+  }
+
+  const video = document.getElementById('webcam');
+  if (!video.srcObject)  { toast('Click Start Camera first.', true); return; }
+  if (!video.videoWidth) { toast('Camera still loading, wait a moment.', true); return; }
+
+  lastCaptureTime = now;
+  const btn = document.getElementById('captureBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Processing...';
+
+  const canvas = document.getElementById('snapCanvas');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const b64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+  try {
+    const r = await fetch('/api/students/capture-face', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student_id: registeredId, image_b64: b64 }),
+    });
+    const data = await r.json();
+
+    if (r.ok) {
+      // Replace slot with thumbnail
+      const slots = document.getElementById('captureGrid').querySelectorAll('.slot');
+      if (slots[captureCount]) {
+        const img = document.createElement('img');
+        img.src = 'data:image/jpeg;base64,' + b64;
+        slots[captureCount].replaceWith(img);
+      }
+      captureCount++;
+      updateProgress();
+      toast(`Photo ${captureCount}/${TARGET} saved ✓`);
+
+      if (captureCount >= TARGET) {
+        btn.textContent = '✓ All Done';
+        btn.disabled = true;
+        document.getElementById('captureStatus').textContent =
+          `${TARGET}/${TARGET} photos — complete!`;
+        toast(`🎉 Face registration complete!`);
+        loadStudents();
+        setTimeout(clearForm, 2500);
+      } else {
+        btn.disabled = false;
+        btn.textContent = '📷 Capture Photo';
+      }
+    } else {
+      toast(data.detail || 'No face detected. Adjust lighting or angle.', true);
+      btn.disabled = false;
+      btn.textContent = '📷 Capture Photo';
+    }
+  } catch(e) {
+    toast('Network error. Try again.', true);
+    btn.disabled = false;
+    btn.textContent = '📷 Capture Photo';
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function clearForm() {
+  document.getElementById('sName').value = '';
+  document.getElementById('sCity').value = '';
+  document.getElementById('sDept').value = '';
+  document.getElementById('sPhone').value = '';
+  document.getElementById('sGuardianRel').value = '';
+  document.getElementById('guardianRelWrap').style.display = 'none';
+  document.getElementById('enrollBadge').style.display = 'none';
+  document.getElementById('captureStatus').textContent = 'Register a student first';
+  document.getElementById('captureBtn').disabled = true;
+  // Reset radio to Mother
+  selectGuardian(document.querySelectorAll('.radio-opt')[0], 'Mother');
+  registeredId = null;
+  captureCount = 0;
+  resetCaptureGrid();
+}
+
+function resetCaptureGrid() {
+  const grid = document.getElementById('captureGrid');
+  grid.innerHTML = '';
+  for (let i = 0; i < TARGET; i++) {
+    const d = document.createElement('div');
+    d.className = 'slot'; d.textContent = '📷';
+    grid.appendChild(d);
+  }
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('progressText').textContent = `0 / ${TARGET} photos`;
+  document.getElementById('progressPct').textContent  = '0%';
+  const btn = document.getElementById('captureBtn');
+  btn.textContent = '📷 Capture Photo';
+}
+
+function updateProgress() {
+  const pct = Math.round(captureCount / TARGET * 100);
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${captureCount} / ${TARGET} photos`;
+  document.getElementById('progressPct').textContent  = pct + '%';
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) =>
+    b.classList.toggle('active', (tab === 'register') ? i === 0 : i === 1));
+  document.getElementById('tab-register').classList.toggle('active', tab === 'register');
+  document.getElementById('tab-manage').classList.toggle('active',   tab === 'manage');
+  if (tab === 'manage') loadStudents();
+}
+
+// ── Student cards ─────────────────────────────────────────────────────────────
+async function loadStudents() {
+  const r        = await fetch('/api/students/');
+  const students = await r.json();
+
+  document.getElementById('manageCount').textContent =
+    `${students.length} student${students.length !== 1 ? 's' : ''} enrolled`;
+
+  const grid = document.getElementById('studentsGrid');
+  if (!students.length) {
+    grid.innerHTML =
+      `<div class="empty-state"><div class="icon">👥</div>
+       No students enrolled yet.</div>`;
+    return;
+  }
+
+  grid.innerHTML = students.map(s => {
+    const ok      = s.photo_count >= TARGET;
+    const dept    = s.dept_name || s.dept_code || '—';
+    const enrDate = new Date(s.enrolled_at).toLocaleDateString();
+    return `
+      <div class="student-card">
+        <div class="student-card-head">
+          <div class="avatar">${s.name.charAt(0).toUpperCase()}</div>
+          <div class="student-info" style="flex:1;min-width:0">
+            <div class="sname">${s.name}</div>
+            <div class="smeta">
+              <span class="roll-tag">${s.student_id}</span> · ${dept}
+            </div>
+          </div>
+          <span class="photo-pill ${ok ? 'photo-ok' : 'photo-low'}">
+            ${s.photo_count} 📷
+          </span>
+        </div>
+        <div class="student-card-body">
+          <div class="stat-row">
+            <span class="key">City</span>
+            <span class="val">${s.city || '—'}</span>
+          </div>
+          <div class="stat-row">
+            <span class="key">Phone</span>
+            <span class="val">${s.phone || '—'}</span>
+          </div>
+          <div class="stat-row">
+            <span class="key">Guardian</span>
+            <span class="val">
+              ${s.guardian_type}${s.guardian_rel ? ' (' + s.guardian_rel + ')' : ''}
+            </span>
+          </div>
+          <div class="stat-row">
+            <span class="key">Enrolled</span>
+            <span class="val">${enrDate}</span>
+          </div>
+          <div class="stat-row">
+            <span class="key">Face</span>
+            <span class="val" style="color:${ok ? 'var(--green)' : 'var(--red)'}">
+              ${ok ? '✓ Ready' : '⚠ Needs photos'}
+            </span>
+          </div>
+        </div>
+        <div class="student-card-foot">
+          <button class="btn btn-grey btn-sm" style="flex:1"
+            onclick='openProfile(${JSON.stringify(s)})'>
+            👁 Profile
+          </button>
+          <button class="btn btn-red btn-sm" style="flex:1"
+            onclick="askDelete('${s.student_id}','${s.name.replace(/'/g,"\\'")}')">
+            🗑 Delete
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ── Profile modal ─────────────────────────────────────────────────────────────
+async function openProfile(s) {
+  document.getElementById('profileModal').style.display = 'flex';
+  document.getElementById('profileAvatar').textContent  = s.name.charAt(0).toUpperCase();
+  document.getElementById('profileName').textContent    = s.name;
+  document.getElementById('profileMeta').textContent    =
+    `${s.dept_name || s.dept_code || '—'} · ${s.city || '—'}`;
+  document.getElementById('profileRoll').textContent    = s.student_id;
+
+  // Info grid
+  const enrolled = new Date(s.enrolled_at).toLocaleDateString();
+  document.getElementById('profileInfoGrid').innerHTML = `
+    <div class="info-item">
+      <div class="ikey">Department</div>
+      <div class="ival">${s.dept_name || s.dept_code || '—'}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">City</div>
+      <div class="ival">${s.city || '—'}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Phone</div>
+      <div class="ival">${s.phone || '—'}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Guardian</div>
+      <div class="ival">
+        ${s.guardian_type}${s.guardian_rel ? ' (' + s.guardian_rel + ')' : ''}
+      </div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Enrolled On</div>
+      <div class="ival">${enrolled}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Face Status</div>
+      <div class="ival" style="color:${s.photo_count>=TARGET?'var(--green)':'var(--red)'}">
+        ${s.photo_count >= TARGET ? '✓ Ready' : `⚠ ${s.photo_count} / ${TARGET} photos`}
+      </div>
+    </div>
+  `;
+
+  // Face photos count
+  const count = s.photo_count || 0;
+  document.getElementById('profilePhotos').innerHTML = count === 0
+    ? '<p style="color:var(--muted);font-size:.85rem;margin-bottom:.5rem">No face photos captured yet.</p>'
+    : `<div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.5rem">
+        ${Array.from({length: count}, () =>
+          `<div style="width:52px;height:52px;border-radius:6px;
+                background:linear-gradient(135deg,#dbeafe,#ede9fe);
+                display:flex;align-items:center;justify-content:center;
+                font-size:1.3rem;border:1.5px solid var(--border)">📷</div>`
+        ).join('')}
+       </div>
+       <p style="font-size:.75rem;color:var(--muted);margin-bottom:.25rem">
+         ${count} face embedding${count !== 1 ? 's' : ''} stored securely
+       </p>`;
+
+  // Attendance
+  document.getElementById('profileAttBody').innerHTML =
+    '<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--muted)">Loading...</td></tr>';
+
+  try {
+    const r       = await fetch(`/api/students/${s.student_id}/attendance`);
+    const records = await r.json();
+    if (!records.length) {
+      document.getElementById('profileAttBody').innerHTML =
+        '<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--muted)">No attendance records yet.</td></tr>';
+    } else {
+      document.getElementById('profileAttBody').innerHTML = records.map(rec => {
+        const dt  = new Date(rec.marked_at);
+        const pct = Math.round((rec.confidence || 0) * 100);
+        return `<tr>
+          <td><code style="font-size:.78rem;background:#f1f5f9;padding:.1rem .35rem;border-radius:3px">
+            ${rec.session_id}
+          </code></td>
+          <td>${rec.subject    || '—'}</td>
+          <td>${rec.dept_name  || '—'}</td>
+          <td>${rec.faculty_name || '—'}</td>
+          <td>${dt.toLocaleDateString()}</td>
+          <td style="color:var(--muted)">
+            ${dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+          </td>
+          <td><span style="font-weight:700;color:${pct>=75?'var(--green)':pct>=55?'var(--amber)':'var(--red)'}">
+            ${pct}%
+          </span></td>
+        </tr>`;
+      }).join('');
+    }
+  } catch(e) {
+    document.getElementById('profileAttBody').innerHTML =
+      '<tr><td colspan="7" style="text-align:center;padding:1.5rem;color:var(--muted)">Error loading records.</td></tr>';
+  }
+}
+
+function closeProfile() { document.getElementById('profileModal').style.display = 'none'; }
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+function askDelete(id, name) {
+  pendingDeleteId = id;
+  document.getElementById('deleteMsg').textContent =
+    `Remove "${name}" (${id}) and their face data? Attendance history is kept.`;
+  document.getElementById('deleteModal').style.display = 'flex';
+}
+
+function closeDelete() {
+  document.getElementById('deleteModal').style.display = 'none';
+  pendingDeleteId = null;
+}
+
+async function confirmDelete() {
+  if (!pendingDeleteId) return;
+  const btn = document.getElementById('deleteConfirmBtn');
+  btn.disabled = true; btn.textContent = 'Deleting...';
+  const r = await fetch(`/api/students/${pendingDeleteId}`, { method: 'DELETE' });
+  btn.disabled = false; btn.textContent = 'Yes, Delete';
+  if (r.ok) {
+    toast('Student deleted.');
+    closeDelete(); closeProfile(); loadStudents();
+  } else {
+    toast('Delete failed. Try again.', true);
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, err = false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = err ? '#dc2626' : '#059669';
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeProfile(); closeDelete(); }
+});
+
+init();
+</script>
+</body>
+</html>

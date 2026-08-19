@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Dashboard — AttendAI</title>
+<style>
+:root{--ink:#0d1117;--surface:#f6f8fa;--card:#fff;--accent:#1a56db;--green:#059669;--amber:#d97706;--red:#dc2626;--border:#e2e8f0;--muted:#64748b;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--surface);color:var(--ink)}
+nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;gap:2rem;height:60px;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.logo{font-weight:800;font-size:1.25rem;color:var(--accent)}
+nav a{color:var(--muted);text-decoration:none;font-size:.875rem;font-weight:500;padding:.25rem 0;border-bottom:2px solid transparent}
+nav a:hover,nav a.active{color:var(--accent);border-color:var(--accent)}
+.page{max-width:1100px;margin:0 auto;padding:1.5rem 2rem}
+.page-title{font-size:1.4rem;font-weight:800;margin-bottom:1.5rem}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.kpi.blue::before{background:var(--accent)}.kpi.green::before{background:var(--green)}
+.kpi.amber::before{background:var(--amber)}.kpi.red::before{background:var(--red)}
+.kpi .val{font-size:2.25rem;font-weight:900;line-height:1}
+.kpi .lbl{font-size:.75rem;color:var(--muted);margin-top:.35rem;text-transform:uppercase;letter-spacing:.05em}
+.grid2{display:grid;grid-template-columns:2fr 1fr;gap:1.25rem;margin-bottom:1.25rem}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius)}
+.card-head{padding:1rem 1.25rem;border-bottom:1px solid var(--border);font-size:.95rem;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap}
+.card-body{padding:1.25rem}
+canvas{max-height:200px}
+
+/* Sessions table */
+.sessions-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.sessions-table th{text-align:left;padding:.6rem .75rem;border-bottom:2px solid var(--border);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600}
+.sessions-table td{padding:.6rem .75rem;border-bottom:1px solid var(--border);vertical-align:middle}
+.sessions-table tr:hover td{background:#f8fafc}
+.sessions-table input[type=checkbox]{cursor:pointer;width:15px;height:15px;accent-color:var(--accent)}
+
+/* Badges & buttons */
+.badge{display:inline-block;font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:99px}
+.badge-green{background:#d1fae5;color:#065f46}
+.badge-grey{background:#f1f5f9;color:var(--muted)}
+.btn{display:inline-flex;align-items:center;gap:.3rem;padding:.4rem .85rem;border-radius:6px;font-size:.8rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:#f1f5f9;text-decoration:none;color:var(--ink);transition:.15s;white-space:nowrap}
+.btn:hover{background:#e2e8f0}
+.btn-danger{background:#fee2e2;color:var(--red);border-color:#fecaca}.btn-danger:hover{background:#fecaca}
+.btn-accent{background:var(--accent);color:#fff;border:none}.btn-accent:hover{background:#1444b8}
+.btn-icon{padding:.32rem .5rem;font-size:.85rem;line-height:1}
+
+/* Bulk selection bar */
+.bulk-bar{display:none;align-items:center;gap:.75rem;padding:.65rem 1rem;background:#fef9c3;border-bottom:1px solid #fde68a;font-size:.85rem;font-weight:600}
+.bulk-bar.show{display:flex}
+
+/* Low attendance */
+.absentee-list{display:grid;gap:.5rem}
+.absentee-row{display:flex;align-items:center;gap:.75rem;padding:.5rem;border-radius:6px;background:#fef2f2}
+.absent-icon{width:32px;height:32px;border-radius:50%;background:#fee2e2;display:flex;align-items:center;justify-content:center;color:var(--red);font-weight:700;font-size:.85rem;flex-shrink:0}
+
+/* Load more */
+#loadMoreBtn{display:none;width:100%;padding:.75rem;text-align:center;font-size:.875rem;font-weight:600;color:var(--accent);background:none;border:none;border-top:1px solid var(--border);cursor:pointer}
+#loadMoreBtn:hover{background:#f8fafc}
+
+/* Modals */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-box{background:#fff;border-radius:14px;width:100%;max-width:680px;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.modal-head{padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.modal-body{overflow-y:auto;flex:1}
+.modal-foot{padding:.75rem 1.5rem;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;font-size:.8rem;color:var(--muted)}
+.modal-close{background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--muted)}.modal-close:hover{color:var(--ink)}
+.detail-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.detail-table th{text-align:left;padding:.65rem 1rem;background:#f8fafc;border-bottom:2px solid var(--border);font-size:.72rem;text-transform:uppercase;color:var(--muted);font-weight:600;position:sticky;top:0}
+.detail-table td{padding:.7rem 1rem;border-bottom:1px solid var(--border)}
+.detail-table tr:hover td{background:#f8fafc}
+.conf-pill{display:inline-block;font-size:.75rem;font-weight:700;padding:.15rem .5rem;border-radius:99px}
+.conf-high{background:#d1fae5;color:#065f46}.conf-mid{background:#fef3c7;color:#92400e}.conf-low{background:#fee2e2;color:#991b1b}
+.confirm-box{background:#fff;border-radius:12px;padding:1.5rem;max-width:400px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.confirm-box h3{font-size:1rem;font-weight:700;margin-bottom:.5rem}
+.confirm-box p{font-size:.875rem;color:var(--muted);margin-bottom:1.25rem;line-height:1.6}
+.confirm-btns{display:flex;gap:.75rem;justify-content:center}
+.confirm-btns .btn{width:auto;padding:.55rem 1.25rem}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">AttendAI</div>
+  <a href="/">Home</a>
+  <a href="/session">Live Session</a>
+  <a href="/register">Register</a>
+  <a href="/dashboard" class="active">Dashboard</a>
+</nav>
+
+<div class="page">
+  <div class="page-title">📊 Teacher Dashboard</div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid">
+    <div class="kpi blue"><div class="val" id="k-total">—</div><div class="lbl">Total Students</div></div>
+    <div class="kpi green"><div class="val" id="k-present">—</div><div class="lbl">Present Today</div></div>
+    <div class="kpi red"><div class="val" id="k-absent">—</div><div class="lbl">Absent Today</div></div>
+    <div class="kpi amber"><div class="val" id="k-rate">—%</div><div class="lbl">Attendance Rate</div></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-head">📈 14-Day Attendance Trend</div>
+      <div class="card-body"><canvas id="trendChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-head">⚠️ Low Attendance</div>
+      <div class="card-body"><div class="absentee-list" id="absenteeList">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- Sessions table -->
+  <div class="card">
+    <div class="card-head">
+      <span>📋 Recent Sessions</span>
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-danger" onclick="confirmClearAll()">🗑 Clear All</button>
+        <button class="btn" onclick="loadDashboard()">↻ Refresh</button>
+      </div>
+    </div>
+
+    <!-- Bulk action bar — shown only when rows are selected -->
+    <div class="bulk-bar" id="bulkBar">
+      <span id="bulkCount">0 selected</span>
+      <button class="btn btn-danger btn-icon" onclick="bulkDelete()">🗑 Delete Selected</button>
+      <button class="btn btn-icon" onclick="clearSelection()">✕ Clear selection</button>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table class="sessions-table">
+        <thead>
+          <tr>
+            <th style="width:36px">
+              <input type="checkbox" id="masterCheck" title="Select all" onchange="masterToggle()">
+            </th>
+            <th>Session ID</th>
+            <th>Course</th>
+            <th>Teacher</th>
+            <th>Started</th>
+            <th>Status</th>
+            <th>Present</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="sessionsBody">
+          <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem">Loading…</td></tr>
+        </tbody>
+      </table>
+      <button id="loadMoreBtn" onclick="loadMore()">Load 5 more ↓</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session Detail Modal -->
+<div class="modal-overlay" id="sessionModal" style="display:none"
+     onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div style="font-weight:700;font-size:1rem" id="modalTitle">Session Details</div>
+        <div style="font-size:.8rem;color:var(--muted)" id="modalSubtitle"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <a id="modalCsvBtn" href="#" class="btn btn-accent" style="font-size:.8rem">↓ Download CSV</a>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <table class="detail-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Roll No.</th><th>Name</th>
+            <th>Confidence</th><th>Time Marked</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="modalTableBody"></tbody>
+      </table>
+    </div>
+    <div class="modal-foot">
+      <span id="modalFooterText">—</span>
+      <span>Esc or click outside to close</span>
+    </div>
+  </div>
+</div>
+
+<!-- Clear All Confirm Modal -->
+<div class="modal-overlay" id="clearModal" style="display:none"
+     onclick="if(event.target===this)document.getElementById('clearModal').style.display='none'">
+  <div class="confirm-box">
+    <h3>Clear All Sessions?</h3>
+    <p>All sessions will be removed from this list. Student attendance records are fully preserved and still visible in each student's profile.</p>
+    <div class="confirm-btns">
+      <button class="btn" onclick="document.getElementById('clearModal').style.display='none'">Cancel</button>
+      <button class="btn btn-danger" onclick="clearAll()">Yes, Clear All</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+let trendChartInstance = null;
+let sessionsOffset     = 0;
+const PAGE_SIZE        = 10;
+const LOAD_MORE_SIZE   = 5;
+let totalSessions      = 0;
+let selectedIds        = new Set();
+
+// ── Dashboard load ────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  sessionsOffset = 0;
+  selectedIds.clear();
+  updateBulkBar();
+
+  const r = await fetch('/api/dashboard/stats');
+  const d = await r.json();
+
+  document.getElementById('k-total').textContent   = d.total_students;
+  document.getElementById('k-present').textContent = d.present_today;
+  document.getElementById('k-absent').textContent  = d.absent_today;
+  document.getElementById('k-rate').textContent    = d.attendance_rate + '%';
+
+  // Trend chart
+  const ctx = document.getElementById('trendChart').getContext('2d');
+  if (trendChartInstance) trendChartInstance.destroy();
+  trendChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels:   d.daily_trend.map(x => x.day.slice(5)),
+      datasets: [{
+        label: 'Students Present',
+        data:  d.daily_trend.map(x => x.count),
+        backgroundColor: 'rgba(26,86,219,.15)',
+        borderColor: '#1a56db',
+        borderWidth: 2,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true,
+      plugins: { legend: { display: false } },
+      scales:  { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+    }
+  });
+
+  // Low attendance
+  const al = document.getElementById('absenteeList');
+  if (!d.top_absentees.length) {
+    al.innerHTML = '<div style="color:var(--muted);font-size:.875rem">No data yet.</div>';
+  } else {
+    al.innerHTML = d.top_absentees.map(a => `
+      <div class="absentee-row">
+        <div class="absent-icon">${a.name.charAt(0)}</div>
+        <div style="flex:1;font-size:.85rem">
+          <div style="font-weight:600">${a.name}</div>
+          <div style="color:var(--muted);font-size:.75rem">${a.absences} session(s) attended</div>
+        </div>
+      </div>`).join('');
+  }
+
+  // First page of sessions
+  await loadSessionsPage(0, PAGE_SIZE, false);
+}
+
+// ── Session table pagination ──────────────────────────────────────────────────
+async function loadSessionsPage(offset, limit, append) {
+  const r    = await fetch(`/api/attendance/sessions?offset=${offset}&limit=${limit}`);
+  const data = await r.json();
+  totalSessions = data.total;
+  const sessions = data.sessions;
+
+  const tbody = document.getElementById('sessionsBody');
+
+  if (!append) {
+    tbody.innerHTML = '';
+    if (!sessions.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem">
+        No sessions yet. Start a live session to see data here.</td></tr>`;
+      document.getElementById('loadMoreBtn').style.display = 'none';
+      document.getElementById('masterCheck').style.display = 'none';
+      return;
+    }
+    document.getElementById('masterCheck').style.display = '';
+  }
+
+  sessions.forEach(s => {
+    const tr = document.createElement('tr');
+    tr.id = `row-${s.session_id}`;
+    tr.innerHTML = `
+      <td>
+        <input type="checkbox" value="${s.session_id}"
+          onchange="onRowCheck('${s.session_id}', this.checked)">
+      </td>
+      <td>
+        <code style="font-size:.78rem;background:#f1f5f9;padding:.15rem .4rem;border-radius:4px">
+          ${s.session_id}
+        </code>
+      </td>
+      <td style="font-size:.82rem">${s.course || '—'}</td>
+      <td style="font-size:.82rem">${s.teacher || '—'}</td>
+      <td style="color:var(--muted);font-size:.78rem">
+        ${new Date(s.started_at).toLocaleString()}
+      </td>
+      <td>
+        <span class="badge ${s.is_active ? 'badge-green' : 'badge-grey'}">
+          ${s.is_active ? '● LIVE' : 'Ended'}
+        </span>
+      </td>
+      <td style="font-weight:700;color:var(--accent)">${s.attendance_count}</td>
+      <td>
+        <div style="display:flex;gap:5px;align-items:center">
+          <button class="btn btn-icon" title="View details"
+            onclick="showSessionDetail('${s.session_id}','${s.course||''}','${s.teacher||''}','${s.started_at}')">
+            👁
+          </button>
+          <a class="btn btn-icon" href="/api/attendance/report/export/${s.session_id}"
+             title="Download CSV">↓</a>
+          <button class="btn btn-danger btn-icon" title="Delete session"
+            onclick="deleteSingle('${s.session_id}')">
+            🗑
+          </button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+
+  sessionsOffset = offset + sessions.length;
+  const hasMore  = sessionsOffset < totalSessions;
+  document.getElementById('loadMoreBtn').style.display = hasMore ? 'block' : 'none';
+  document.getElementById('loadMoreBtn').textContent   =
+    `Load 5 more (${totalSessions - sessionsOffset} remaining) ↓`;
+}
+
+async function loadMore() {
+  await loadSessionsPage(sessionsOffset, LOAD_MORE_SIZE, true);
+}
+
+// ── Checkbox / selection logic ────────────────────────────────────────────────
+function onRowCheck(id, checked) {
+  checked ? selectedIds.add(id) : selectedIds.delete(id);
+  updateBulkBar();
+  syncMasterCheck();
+}
+
+function masterToggle() {
+  const master  = document.getElementById('masterCheck');
+  const boxes   = document.querySelectorAll('#sessionsBody input[type=checkbox]');
+  boxes.forEach(b => {
+    b.checked = master.checked;
+    master.checked ? selectedIds.add(b.value) : selectedIds.delete(b.value);
+  });
+  updateBulkBar();
+}
+
+function clearSelection() {
+  document.querySelectorAll('#sessionsBody input[type=checkbox]')
+    .forEach(b => b.checked = false);
+  document.getElementById('masterCheck').checked = false;
+  selectedIds.clear();
+  updateBulkBar();
+}
+
+function syncMasterCheck() {
+  const boxes = [...document.querySelectorAll('#sessionsBody input[type=checkbox]')];
+  document.getElementById('masterCheck').checked =
+    boxes.length > 0 && boxes.every(b => b.checked);
+}
+
+function updateBulkBar() {
+  const count = selectedIds.size;
+  document.getElementById('bulkBar').classList.toggle('show', count > 0);
+  document.getElementById('bulkCount').textContent =
+    `${count} session${count !== 1 ? 's' : ''} selected`;
+}
+
+// ── Delete actions ────────────────────────────────────────────────────────────
+async function deleteSingle(sessionId) {
+  if (!confirm(`Delete session ${sessionId}?\n\nStudent attendance records are preserved.`)) return;
+  const r = await fetch(`/api/attendance/session/${sessionId}`, { method: 'DELETE' });
+  if (r.ok) {
+    document.getElementById(`row-${sessionId}`)?.remove();
+    selectedIds.delete(sessionId);
+    totalSessions--;
+    updateBulkBar();
+    syncMasterCheck();
+  } else {
+    alert('Delete failed. Please try again.');
+  }
+}
+
+async function bulkDelete() {
+  if (!selectedIds.size) return;
+  const ids = [...selectedIds];
+  if (!confirm(`Delete ${ids.length} selected session${ids.length !== 1 ? 's' : ''}?\n\nStudent attendance records are preserved.`)) return;
+
+  const r = await fetch('/api/attendance/sessions/bulk', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_ids: ids })
+  });
+  if (r.ok) {
+    ids.forEach(id => document.getElementById(`row-${id}`)?.remove());
+    totalSessions -= ids.length;
+    selectedIds.clear();
+    updateBulkBar();
+    syncMasterCheck();
+  } else {
+    alert('Bulk delete failed. Please try again.');
+  }
+}
+
+function confirmClearAll() {
+  document.getElementById('clearModal').style.display = 'flex';
+}
+
+async function clearAll() {
+  const r = await fetch('/api/attendance/sessions/clear-all', { method: 'DELETE' });
+  if (r.ok) {
+    document.getElementById('clearModal').style.display = 'none';
+    await loadDashboard();
+  } else {
+    alert('Clear all failed. Please try again.');
+  }
+}
+
+// ── Session detail modal ──────────────────────────────────────────────────────
+async function showSessionDetail(sessionId, course, teacher, startedAt) {
+  document.getElementById('sessionModal').style.display = 'flex';
+  document.getElementById('modalTitle').textContent =
+    `${course || 'Session'} — ${sessionId}`;
+  document.getElementById('modalSubtitle').textContent =
+    `Teacher: ${teacher || '—'} · Started: ${new Date(startedAt).toLocaleString()}`;
+  document.getElementById('modalCsvBtn').href =
+    `/api/attendance/report/export/${sessionId}`;
+  document.getElementById('modalTableBody').innerHTML =
+    `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">Loading...</td></tr>`;
+  document.getElementById('modalFooterText').textContent = 'Fetching records…';
+
+  try {
+    const r    = await fetch(`/api/attendance/session/${sessionId}/live`);
+    const data = await r.json();
+    const records = data.records || [];
+
+    if (!records.length) {
+      document.getElementById('modalTableBody').innerHTML =
+        `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">
+          No students were marked present in this session.
+        </td></tr>`;
+      document.getElementById('modalFooterText').textContent = '0 students present';
+      return;
+    }
+
+    document.getElementById('modalTableBody').innerHTML = records.map((rec, i) => {
+      const pct  = Math.round((rec.confidence || 0) * 100);
+      const cls  = pct >= 75 ? 'conf-high' : pct >= 55 ? 'conf-mid' : 'conf-low';
+      const time = new Date(rec.marked_at)
+        .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return `
+        <tr>
+          <td style="color:var(--muted);font-size:.8rem">${i + 1}</td>
+          <td>
+            <code style="font-size:.8rem;background:#f1f5f9;padding:.1rem .35rem;border-radius:3px">
+              ${rec.student_id}
+            </code>
+          </td>
+          <td style="font-weight:600">${rec.name}</td>
+          <td><span class="conf-pill ${cls}">${pct}%</span></td>
+          <td style="color:var(--muted);font-size:.82rem">${time}</td>
+          <td style="color:var(--green);font-weight:600;font-size:.82rem">✓ Present</td>
+        </tr>`;
+    }).join('');
+
+    document.getElementById('modalFooterText').textContent =
+      `${records.length} student${records.length !== 1 ? 's' : ''} marked present · ${sessionId}`;
+
+  } catch (e) {
+    document.getElementById('modalTableBody').innerHTML =
+      `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--muted)">
+        Failed to load records. Please try again.
+      </td></tr>`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('sessionModal').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// Init
+loadDashboard();
+setInterval(loadDashboard, 15000);
+</script>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Faculty — AttendAI</title>
+<style>
+:root{--ink:#0d1117;--surface:#f6f8fa;--card:#fff;--accent:#1a56db;--green:#059669;--amber:#d97706;--red:#dc2626;--border:#e2e8f0;--muted:#64748b;--radius:12px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--surface);color:var(--ink)}
+nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 2rem;display:flex;align-items:center;gap:2rem;height:60px;position:sticky;top:0;z-index:100;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+.logo{font-weight:800;font-size:1.25rem;color:var(--accent)}
+nav a{color:var(--muted);text-decoration:none;font-size:.875rem;font-weight:500;padding:.25rem 0;border-bottom:2px solid transparent}
+nav a:hover,nav a.active{color:var(--accent);border-color:var(--accent)}
+.main{max-width:1100px;margin:0 auto;padding:1.5rem 2rem}
+.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:.75rem}
+.page-title{font-size:1.4rem;font-weight:800}
+.btn{display:inline-flex;align-items:center;gap:.35rem;padding:.5rem 1.1rem;border-radius:7px;font-size:.85rem;font-weight:600;cursor:pointer;border:none;transition:.15s;text-decoration:none}
+.btn-grey{background:#f1f5f9;color:var(--ink);border:1px solid var(--border)}.btn-grey:hover{background:#e2e8f0}
+.btn-blue{background:var(--accent);color:#fff}.btn-blue:hover{background:#1444b8}
+.btn-sm{padding:.35rem .75rem;font-size:.78rem}
+
+/* Filter bar */
+.filter-bar{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.25rem;align-items:center}
+.filter-bar select{padding:.45rem .75rem;border:1.5px solid var(--border);border-radius:6px;font-size:.85rem;background:#fff;outline:none;cursor:pointer}
+.filter-bar select:focus{border-color:var(--accent)}
+.count-label{font-size:.875rem;color:var(--muted);margin-left:auto}
+
+/* Faculty grid */
+.faculty-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1.1rem}
+.fac-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:.2s;cursor:pointer}
+.fac-card:hover{box-shadow:0 6px 24px rgba(0,0,0,.09);transform:translateY(-2px)}
+.fac-card-top{padding:1.1rem 1rem .9rem;display:flex;align-items:center;gap:.85rem;border-bottom:1px solid var(--border)}
+.fac-avatar{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:1.25rem;flex-shrink:0}
+.fac-info .fname{font-weight:700;font-size:.95rem;line-height:1.2}
+.fac-info .fmeta{font-size:.75rem;color:var(--muted);margin-top:.25rem}
+.fac-card-body{padding:.8rem 1rem}
+.fac-stat{display:flex;justify-content:space-between;font-size:.8rem;padding:.25rem 0;border-bottom:1px solid #f1f5f9}
+.fac-stat:last-child{border:none}
+.fac-stat .key{color:var(--muted)}
+.fac-stat .val{font-weight:600}
+.fac-card-foot{padding:.7rem 1rem;border-top:1px solid var(--border);display:flex;justify-content:flex-end}
+.fac-id-pill{font-family:monospace;font-size:.72rem;font-weight:700;padding:.2rem .5rem;border-radius:99px;background:#eff6ff;color:var(--accent);border:1px solid #dbeafe}
+
+.empty-state{text-align:center;padding:4rem 1rem;color:var(--muted);grid-column:1/-1}
+.empty-state .icon{font-size:3rem;margin-bottom:.75rem}
+
+/* Dept color map (avatar backgrounds) */
+.dept-01{background:linear-gradient(135deg,#1a56db,#0ea5e9)}
+.dept-03{background:linear-gradient(135deg,#059669,#34d399)}
+.dept-05{background:linear-gradient(135deg,#7c3aed,#a78bfa)}
+.dept-07{background:linear-gradient(135deg,#d97706,#fbbf24)}
+.dept-09{background:linear-gradient(135deg,#dc2626,#f87171)}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.48);z-index:999;display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-box{background:#fff;border-radius:14px;width:100%;max-width:720px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.22)}
+.modal-head{padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:1rem;flex-shrink:0}
+.modal-head .mav{width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:1.3rem;flex-shrink:0}
+.modal-head-info .mname{font-size:1.05rem;font-weight:700}
+.modal-head-info .mmeta{font-size:.8rem;color:var(--muted);margin-top:.2rem}
+.modal-close{margin-left:auto;background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--muted);flex-shrink:0}
+.modal-close:hover{color:var(--ink)}
+.modal-body{overflow-y:auto;flex:1;padding:1.25rem 1.5rem}
+.section-label{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:1rem 0 .5rem;padding-bottom:.3rem;border-bottom:1px solid var(--border)}
+.section-label:first-child{margin-top:0}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .75rem;margin-bottom:.5rem}
+.info-item .ikey{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.info-item .ival{font-size:.875rem;font-weight:600;margin-top:.1rem}
+.sess-table{width:100%;border-collapse:collapse;font-size:.83rem}
+.sess-table th{text-align:left;padding:.5rem .6rem;border-bottom:2px solid var(--border);font-size:.72rem;text-transform:uppercase;color:var(--muted);font-weight:600;position:sticky;top:0;background:#fff}
+.sess-table td{padding:.55rem .6rem;border-bottom:1px solid var(--border)}
+.sess-table tr:hover td{background:#f8fafc}
+.badge{display:inline-block;font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:99px}
+.badge-green{background:#d1fae5;color:#065f46}.badge-grey{background:#f1f5f9;color:var(--muted)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">AttendAI</div>
+  <a href="/">Home</a>
+  <a href="/session">Live Session</a>
+  <a href="/register">Register</a>
+  <a href="/faculty" class="active">Faculty</a>
+  <a href="/dashboard">Dashboard</a>
+</nav>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">👨‍🏫 Faculty Directory</div>
+    <div style="display:flex;gap:.5rem">
+      <button class="btn btn-grey" onclick="loadFaculty()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <select id="deptFilter" onchange="filterCards()">
+      <option value="">All Departments</option>
+    </select>
+    <span class="count-label" id="countLabel">Loading...</span>
+  </div>
+
+  <!-- Cards -->
+  <div class="faculty-grid" id="facultyGrid">
+    <div class="empty-state"><div class="icon">👨‍🏫</div>Loading faculty...</div>
+  </div>
+</div>
+
+<!-- Profile Modal -->
+<div class="modal-overlay" id="profileModal" style="display:none"
+     onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div class="mav" id="mAvatar"></div>
+      <div class="modal-head-info">
+        <div class="mname" id="mName">—</div>
+        <div class="mmeta" id="mMeta">—</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="section-label">Faculty Details</div>
+      <div class="info-grid" id="mInfoGrid"></div>
+
+      <div class="section-label">Sessions Taken</div>
+      <table class="sess-table">
+        <thead>
+          <tr>
+            <th>Session</th><th>Subject</th><th>Dept</th>
+            <th>Date</th><th>Students</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="mSessionsBody">
+          <tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--muted)">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let allFaculty = [];
+const DEPT_COLORS = {
+  '01': 'dept-01', '03': 'dept-03',
+  '05': 'dept-05', '07': 'dept-07', '09': 'dept-09'
+};
+
+function deptClass(code) {
+  return DEPT_COLORS[code] || 'dept-01';
+}
+
+// ── Load all faculty ──────────────────────────────────────────────────────────
+async function loadFaculty() {
+  try {
+    // Load dept filter options
+    const dr    = await fetch('/api/students/meta/departments');
+    const depts = await dr.json();
+    const filt  = document.getElementById('deptFilter');
+    filt.innerHTML = '<option value="">All Departments</option>';
+    depts.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.code; o.textContent = d.name;
+      filt.appendChild(o);
+    });
+
+    // Load faculty
+    const r = await fetch('/api/students/meta/faculty-all');
+    allFaculty = await r.json();
+    renderCards(allFaculty);
+  } catch(e) {
+    document.getElementById('facultyGrid').innerHTML =
+      `<div class="empty-state"><div class="icon">⚠️</div>
+       Failed to load. Make sure you ran seed_master.py</div>`;
+  }
+}
+
+function renderCards(list) {
+  const grid = document.getElementById('facultyGrid');
+  document.getElementById('countLabel').textContent =
+    `${list.length} faculty member${list.length !== 1 ? 's' : ''}`;
+
+  if (!list.length) {
+    grid.innerHTML = `<div class="empty-state">
+      <div class="icon">👨‍🏫</div>
+      No faculty found. Run <code>python scripts/seed_master.py</code> first.
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = list.map(f => `
+    <div class="fac-card" onclick='openProfile(${JSON.stringify(f)})'>
+      <div class="fac-card-top">
+        <div class="fac-avatar ${deptClass(f.dept_code)}">${f.name.charAt(0)}</div>
+        <div class="fac-info" style="min-width:0">
+          <div class="fname">${f.name}</div>
+          <div class="fmeta">${f.dept_name || f.dept_code}</div>
+        </div>
+      </div>
+      <div class="fac-card-body">
+        <div class="fac-stat">
+          <span class="key">Faculty ID</span>
+          <span class="val"><span class="fac-id-pill">${f.faculty_id}</span></span>
+        </div>
+        <div class="fac-stat">
+          <span class="key">Sessions taken</span>
+          <span class="val" style="color:var(--accent)">${f.total_sessions}</span>
+        </div>
+        <div class="fac-stat">
+          <span class="key">Email</span>
+          <span class="val" style="font-size:.78rem">${f.email || '—'}</span>
+        </div>
+      </div>
+      <div class="fac-card-foot">
+        <span class="fac-id-pill">${f.dept_name || f.dept_code}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function filterCards() {
+  const dept = document.getElementById('deptFilter').value;
+  const filtered = dept ? allFaculty.filter(f => f.dept_code === dept) : allFaculty;
+  renderCards(filtered);
+}
+
+// ── Profile modal ─────────────────────────────────────────────────────────────
+async function openProfile(f) {
+  document.getElementById('profileModal').style.display = 'flex';
+
+  // Header
+  const av = document.getElementById('mAvatar');
+  av.textContent = f.name.charAt(0);
+  av.className   = `mav ${deptClass(f.dept_code)}`;
+  document.getElementById('mName').textContent = f.name;
+  document.getElementById('mMeta').textContent =
+    `${f.dept_name || f.dept_code} · ${f.faculty_id}`;
+
+  // Info grid
+  document.getElementById('mInfoGrid').innerHTML = `
+    <div class="info-item">
+      <div class="ikey">Faculty ID</div>
+      <div class="ival" style="font-family:monospace;color:var(--accent)">${f.faculty_id}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Department</div>
+      <div class="ival">${f.dept_name || f.dept_code}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Email</div>
+      <div class="ival">${f.email || '—'}</div>
+    </div>
+    <div class="info-item">
+      <div class="ikey">Total Sessions</div>
+      <div class="ival" style="color:var(--accent)">${f.total_sessions}</div>
+    </div>
+  `;
+
+  // Sessions
+  document.getElementById('mSessionsBody').innerHTML =
+    '<tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--muted)">Loading...</td></tr>';
+
+  try {
+    const r       = await fetch(`/api/students/meta/faculty/${f.faculty_id}/sessions`);
+    const sessions = await r.json();
+
+    if (!sessions.length) {
+      document.getElementById('mSessionsBody').innerHTML =
+        '<tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--muted)">No sessions taken yet.</td></tr>';
+      return;
+    }
+
+    document.getElementById('mSessionsBody').innerHTML = sessions.map(s => {
+      const dt = new Date(s.started_at);
+      return `<tr>
+        <td><code style="font-size:.78rem;background:#f1f5f9;padding:.1rem .35rem;border-radius:3px">${s.session_id}</code></td>
+        <td>${s.subject || '—'}</td>
+        <td style="font-size:.8rem">${s.dept_name || s.dept_code || '—'}</td>
+        <td style="color:var(--muted);font-size:.8rem">${dt.toLocaleDateString()} ${dt.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</td>
+        <td style="font-weight:700;color:var(--accent)">${s.attendance_count}</td>
+        <td><span class="badge ${s.is_active ? 'badge-green' : 'badge-grey'}">${s.is_active ? '● LIVE' : 'Ended'}</span></td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('mSessionsBody').innerHTML =
+      '<tr><td colspan="6" style="text-align:center;padding:1.5rem;color:var(--muted)">Error loading sessions.</td></tr>';
+  }
+}
+
+function closeModal() {
+  document.getElementById('profileModal').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+loadFaculty();
+</script>
+</body>
+</html>
