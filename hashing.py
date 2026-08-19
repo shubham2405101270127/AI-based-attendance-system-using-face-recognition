@@ -1,270 +1,290 @@
-"""
-Fast cryptographic hash of Python objects, with a special case for fast
-hashing of numpy arrays.
-"""
-
-# Author: Gael Varoquaux <gael dot varoquaux at normalesup dot org>
-# Copyright (c) 2009 Gael Varoquaux
-# License: BSD Style, 3 clauses.
-
-import decimal
-import hashlib
-import io
-import pickle
-import struct
-import sys
-import types
-
-Pickler = pickle._Pickler
+from keras.src import backend
+from keras.src.api_export import keras_export
+from keras.src.layers.layer import Layer
+from keras.src.utils import backend_utils
+from keras.src.utils import numerical_utils
+from keras.src.utils import tf_utils
+from keras.src.utils.module_utils import tensorflow as tf
 
 
-class _ConsistentSet(object):
-    """Class used to ensure the hash of Sets is preserved
-    whatever the order of its items.
+@keras_export("keras.layers.Hashing")
+class Hashing(Layer):
+    """A preprocessing layer which hashes and bins categorical features.
+
+    This layer transforms categorical inputs to hashed output. It element-wise
+    converts a ints or strings to ints in a fixed range. The stable hash
+    function uses `tensorflow::ops::Fingerprint` to produce the same output
+    consistently across all platforms.
+
+    This layer uses [FarmHash64](https://github.com/google/farmhash) by default,
+    which provides a consistent hashed output across different platforms and is
+    stable across invocations, regardless of device and context, by mixing the
+    input bits thoroughly.
+
+    If you want to obfuscate the hashed output, you can also pass a random
+    `salt` argument in the constructor. In that case, the layer will use the
+    [SipHash64](https://github.com/google/highwayhash) hash function, with
+    the `salt` value serving as additional input to the hash function.
+
+    **Note:** This layer internally uses TensorFlow. It cannot
+    be used as part of the compiled computation graph of a model with
+    any backend other than TensorFlow.
+    It can however be used with any backend when running eagerly.
+    It can also always be used as part of an input preprocessing pipeline
+    with any backend (outside the model itself), which is how we recommend
+    to use this layer.
+
+    **Note:** This layer is safe to use inside a `tf.data` pipeline
+    (independently of which backend you're using).
+
+    **Example (FarmHash64)**
+
+    >>> layer = keras.layers.Hashing(num_bins=3)
+    >>> inp = [['A'], ['B'], ['C'], ['D'], ['E']]
+    >>> layer(inp)
+    array([[1],
+            [0],
+            [1],
+            [1],
+            [2]])>
+
+    **Example (FarmHash64) with a mask value**
+
+    >>> layer = keras.layers.Hashing(num_bins=3, mask_value='')
+    >>> inp = [['A'], ['B'], [''], ['C'], ['D']]
+    >>> layer(inp)
+    array([[1],
+            [1],
+            [0],
+            [2],
+            [2]])
+
+    **Example (SipHash64)**
+
+    >>> layer = keras.layers.Hashing(num_bins=3, salt=[133, 137])
+    >>> inp = [['A'], ['B'], ['C'], ['D'], ['E']]
+    >>> layer(inp)
+    array([[1],
+            [2],
+            [1],
+            [0],
+            [2]])
+
+    **Example (Siphash64 with a single integer, same as `salt=[133, 133]`)**
+
+    >>> layer = keras.layers.Hashing(num_bins=3, salt=133)
+    >>> inp = [['A'], ['B'], ['C'], ['D'], ['E']]
+    >>> layer(inp)
+    array([[0],
+            [0],
+            [2],
+            [1],
+            [0]])
+
+    Args:
+        num_bins: Number of hash bins. Note that this includes the `mask_value`
+            bin, so the effective number of bins is `(num_bins - 1)`
+            if `mask_value` is set.
+        mask_value: A value that represents masked inputs, which are mapped to
+            index 0. `None` means no mask term will be added and the
+            hashing will start at index 0. Defaults to `None`.
+        salt: A single unsigned integer or None.
+            If passed, the hash function used will be SipHash64,
+            with these values used as an additional input
+            (known as a "salt" in cryptography).
+            These should be non-zero. If `None`, uses the FarmHash64 hash
+            function. It also supports tuple/list of 2 unsigned
+            integer numbers, see reference paper for details.
+            Defaults to `None`.
+        output_mode: Specification for the output of the layer. Values can be
+            `"int"`, `"one_hot"`, `"multi_hot"`, or
+            `"count"` configuring the layer as follows:
+            - `"int"`: Return the integer bin indices directly.
+            - `"one_hot"`: Encodes each individual element in the input into an
+                array the same size as `num_bins`, containing a 1
+                at the input's bin index. If the last dimension is size 1,
+                will encode on that dimension.
+                If the last dimension is not size 1, will append a new
+                dimension for the encoded output.
+            - `"multi_hot"`: Encodes each sample in the input into a
+                single array the same size as `num_bins`,
+                containing a 1 for each bin index
+                index present in the sample. Treats the last dimension
+                as the sample dimension, if input shape is
+                `(..., sample_length)`, output shape will be
+                `(..., num_tokens)`.
+            - `"count"`: As `"multi_hot"`, but the int array contains a count of
+                the number of times the bin index appeared in the sample.
+            Defaults to `"int"`.
+        sparse: Boolean. Only applicable to `"one_hot"`, `"multi_hot"`,
+            and `"count"` output modes. Only supported with TensorFlow
+            backend. If `True`, returns a `SparseTensor` instead of
+            a dense `Tensor`. Defaults to `False`.
+        **kwargs: Keyword arguments to construct a layer.
+
+    Input shape:
+        A single string, a list of strings, or an `int32` or `int64` tensor
+        of shape `(batch_size, ...,)`.
+
+    Output shape:
+        An `int32` tensor of shape `(batch_size, ...)`.
+
+    Reference:
+
+    - [SipHash with salt](https://www.131002.net/siphash/siphash.pdf)
     """
 
-    def __init__(self, set_sequence):
-        # Forces order of elements in set to ensure consistent hash.
-        try:
-            # Trying first to order the set assuming the type of elements is
-            # consistent and orderable.
-            # This fails on python 3 when elements are unorderable
-            # but we keep it in a try as it's faster.
-            self._sequence = sorted(set_sequence)
-        except (TypeError, decimal.InvalidOperation):
-            # If elements are unorderable, sorting them using their hash.
-            # This is slower but works in any case.
-            self._sequence = sorted((hash(e) for e in set_sequence))
-
-
-class _MyHash(object):
-    """Class used to hash objects that won't normally pickle"""
-
-    def __init__(self, *args):
-        self.args = args
-
-
-class Hasher(Pickler):
-    """A subclass of pickler, to do cryptographic hashing, rather than
-    pickling. This is used to produce a unique hash of the given
-    Python object that is not necessarily cryptographically secure.
-    """
-
-    def __init__(self, hash_name="md5"):
-        self.stream = io.BytesIO()
-        # By default we want a pickle protocol that only changes with
-        # the major python version and not the minor one
-        protocol = 3
-        Pickler.__init__(self, self.stream, protocol=protocol)
-        # Initialise the hash obj
-        self._hash = hashlib.new(hash_name, usedforsecurity=False)
-
-    def hash(self, obj, return_digest=True):
-        try:
-            self.dump(obj)
-        except pickle.PicklingError as e:
-            e.args += ("PicklingError while hashing %r: %r" % (obj, e),)
-            raise
-        dumps = self.stream.getvalue()
-        self._hash.update(dumps)
-        if return_digest:
-            return self._hash.hexdigest()
-
-    def save(self, obj):
-        if isinstance(obj, (types.MethodType, type({}.pop))):
-            # the Pickler cannot pickle instance methods; here we decompose
-            # them into components that make them uniquely identifiable
-            if hasattr(obj, "__func__"):
-                func_name = obj.__func__.__name__
-            else:
-                func_name = obj.__name__
-            inst = obj.__self__
-            if type(inst) is type(pickle):
-                obj = _MyHash(func_name, inst.__name__)
-            elif inst is None:
-                # type(None) or type(module) do not pickle
-                obj = _MyHash(func_name, inst)
-            else:
-                cls = obj.__self__.__class__
-                obj = _MyHash(func_name, inst, cls)
-        Pickler.save(self, obj)
-
-    def memoize(self, obj):
-        # We want hashing to be sensitive to value instead of reference.
-        # For example we want ['aa', 'aa'] and ['aa', 'aaZ'[:2]]
-        # to hash to the same value and that's why we disable memoization
-        # for strings
-        if isinstance(obj, (bytes, str)):
-            return
-        Pickler.memoize(self, obj)
-
-    # The dispatch table of the pickler is not accessible in Python
-    # 3, as these lines are only bugware for IPython, we skip them.
-    def save_global(self, obj, name=None, pack=struct.pack):
-        # We have to override this method in order to deal with objects
-        # defined interactively in IPython that are not injected in
-        # __main__
-        kwargs = dict(name=name, pack=pack)
-        del kwargs["pack"]
-        try:
-            Pickler.save_global(self, obj, **kwargs)
-        except pickle.PicklingError:
-            Pickler.save_global(self, obj, **kwargs)
-            module = getattr(obj, "__module__", None)
-            if module == "__main__":
-                my_name = name
-                if my_name is None:
-                    my_name = obj.__name__
-                mod = sys.modules[module]
-                if not hasattr(mod, my_name):
-                    # IPython doesn't inject the variables define
-                    # interactively in __main__
-                    setattr(mod, my_name, obj)
-
-    dispatch = Pickler.dispatch.copy()
-    # builtin
-    dispatch[type(len)] = save_global
-    # type
-    dispatch[type(object)] = save_global
-    # classobj
-    dispatch[type(Pickler)] = save_global
-    # function
-    dispatch[type(pickle.dump)] = save_global
-
-    # We use *args in _batch_setitems signature because _batch_setitems has an
-    # additional 'obj' argument in Python 3.14
-    def _batch_setitems(self, items, *args):
-        # forces order of keys in dict to ensure consistent hash.
-        try:
-            # Trying first to compare dict assuming the type of keys is
-            # consistent and orderable.
-            # This fails on python 3 when keys are unorderable
-            # but we keep it in a try as it's faster.
-            Pickler._batch_setitems(self, iter(sorted(items)), *args)
-        except TypeError:
-            # If keys are unorderable, sorting them using their hash. This is
-            # slower but works in any case.
-            Pickler._batch_setitems(
-                self, iter(sorted((hash(k), v) for k, v in items)), *args
+    def __init__(
+        self,
+        num_bins,
+        mask_value=None,
+        salt=None,
+        output_mode="int",
+        sparse=False,
+        **kwargs,
+    ):
+        if not tf.available:
+            raise ImportError(
+                "Layer Hashing requires TensorFlow. "
+                "Install it via `pip install tensorflow`."
             )
 
-    def save_set(self, set_items):
-        # forces order of items in Set to ensure consistent hash
-        Pickler.save(self, _ConsistentSet(set_items))
+        # By default, output int32 when output_mode='int' and floats otherwise.
+        if "dtype" not in kwargs or kwargs["dtype"] is None:
+            kwargs["dtype"] = (
+                "int64" if output_mode == "int" else backend.floatx()
+            )
 
-    dispatch[type(set())] = save_set
+        super().__init__(**kwargs)
 
+        if num_bins is None or num_bins <= 0:
+            raise ValueError(
+                "The `num_bins` for `Hashing` cannot be `None` or "
+                f"non-positive values. Received: num_bins={num_bins}."
+            )
 
-class NumpyHasher(Hasher):
-    """Special case the hasher for when numpy is loaded."""
+        if output_mode == "int" and (
+            self.dtype_policy.name not in ("int32", "int64")
+        ):
+            raise ValueError(
+                'When `output_mode="int"`, `dtype` should be an integer '
+                f"type, 'int32' or 'in64'. Received: dtype={kwargs['dtype']}"
+            )
 
-    def __init__(self, hash_name="md5", coerce_mmap=False):
+        # 'output_mode' must be one of (INT, ONE_HOT, MULTI_HOT, COUNT)
+        accepted_output_modes = ("int", "one_hot", "multi_hot", "count")
+        if output_mode not in accepted_output_modes:
+            raise ValueError(
+                "Invalid value for argument `output_mode`. "
+                f"Expected one of {accepted_output_modes}. "
+                f"Received: output_mode={output_mode}"
+            )
+
+        if sparse and output_mode == "int":
+            raise ValueError(
+                "`sparse` may only be true if `output_mode` is "
+                '`"one_hot"`, `"multi_hot"`, or `"count"`. '
+                f"Received: sparse={sparse} and "
+                f"output_mode={output_mode}"
+            )
+
+        self.num_bins = num_bins
+        self.mask_value = mask_value
+        self.strong_hash = True if salt is not None else False
+        self.output_mode = output_mode
+        self.sparse = sparse
+        self.salt = None
+        if salt is not None:
+            if isinstance(salt, (tuple, list)) and len(salt) == 2:
+                self.salt = list(salt)
+            elif isinstance(salt, int):
+                self.salt = [salt, salt]
+            else:
+                raise ValueError(
+                    "The `salt` argument for `Hashing` can only be a tuple of "
+                    "size 2 integers, or a single integer. "
+                    f"Received: salt={salt}."
+                )
+        self._convert_input_args = False
+        self._allow_non_tensor_positional_args = True
+        self.supports_jit = False
+
+    def call(self, inputs):
+        from keras.src.backend import tensorflow as tf_backend
+
+        with tf.device("CPU:0"):
+            inputs = tf_utils.ensure_tensor(inputs)
+            if self.output_mode == "one_hot" and inputs.shape[-1] == 1:
+                inputs = tf_backend.numpy.squeeze(inputs, axis=-1)
+            if isinstance(inputs, tf.SparseTensor):
+                indices = tf.SparseTensor(
+                    indices=inputs.indices,
+                    values=self._hash_values_to_bins(inputs.values),
+                    dense_shape=inputs.dense_shape,
+                )
+            else:
+                indices = self._hash_values_to_bins(inputs)
+            outputs = numerical_utils.encode_categorical_inputs(
+                indices,
+                output_mode=self.output_mode,
+                depth=self.num_bins,
+                sparse=self.sparse,
+                dtype=self.dtype,
+                backend_module=tf_backend,
+            )
+        return backend_utils.convert_tf_tensor(outputs)
+
+    def _hash_values_to_bins(self, values):
+        """Converts a non-sparse tensor of values to bin indices.
+        Must be called inside a `with tf.device("CPU:0")` context (as done
+        in `call`) since all TF string ops produce CPU-resident tensors.
         """
-        Parameters
-        ----------
-        hash_name: string
-            The hash algorithm to be used
-        coerce_mmap: boolean
-            Make no difference between np.memmap and np.ndarray
-            objects.
-        """
-        self.coerce_mmap = coerce_mmap
-        Hasher.__init__(self, hash_name=hash_name)
-        # delayed import of numpy, to avoid tight coupling
-        import numpy as np
-
-        self.np = np
-        if hasattr(np, "getbuffer"):
-            self._getbuffer = np.getbuffer
+        hash_bins = self.num_bins
+        mask = None
+        # If mask_value is set, the zeroth bin is reserved for it.
+        if self.mask_value is not None and hash_bins > 1:
+            hash_bins -= 1
+            mask = tf.equal(values, self.mask_value)
+        # Convert all values to strings before hashing.
+        # Floats are first normalized to int64.
+        if values.dtype.is_floating:
+            values = tf.cast(values, dtype="int64")
+        if values.dtype != tf.string:
+            values = tf.as_string(values)
+        # Hash the strings.
+        if self.strong_hash:
+            values = tf.strings.to_hash_bucket_strong(
+                values, hash_bins, name="hash", key=self.salt
+            )
         else:
-            self._getbuffer = memoryview
-
-    def save(self, obj):
-        """Subclass the save method, to hash ndarray subclass, rather
-        than pickling them. Off course, this is a total abuse of
-        the Pickler class.
-        """
-        if isinstance(obj, self.np.ndarray) and not obj.dtype.hasobject:
-            # Compute a hash of the object
-            # The update function of the hash requires a c_contiguous buffer.
-            if obj.shape == ():
-                # 0d arrays need to be flattened because viewing them as bytes
-                # raises a ValueError exception.
-                obj_c_contiguous = obj.flatten()
-            elif obj.flags.c_contiguous:
-                obj_c_contiguous = obj
-            elif obj.flags.f_contiguous:
-                obj_c_contiguous = obj.T
-            else:
-                # Cater for non-single-segment arrays: this creates a
-                # copy, and thus alleviates this issue.
-                # XXX: There might be a more efficient way of doing this
-                obj_c_contiguous = obj.flatten()
-
-            # memoryview is not supported for some dtypes, e.g. datetime64, see
-            # https://github.com/numpy/numpy/issues/4983. The
-            # workaround is to view the array as bytes before
-            # taking the memoryview.
-            self._hash.update(self._getbuffer(obj_c_contiguous.view(self.np.uint8)))
-
-            # We store the class, to be able to distinguish between
-            # Objects with the same binary content, but different
-            # classes.
-            if self.coerce_mmap and isinstance(obj, self.np.memmap):
-                # We don't make the difference between memmap and
-                # normal ndarrays, to be able to reload previously
-                # computed results with memmap.
-                klass = self.np.ndarray
-            else:
-                klass = obj.__class__
-            # We also return the dtype and the shape, to distinguish
-            # different views on the same data with different dtypes.
-
-            # The object will be pickled by the pickler hashed at the end.
-            obj = (klass, ("HASHED", obj.dtype, obj.shape, obj.strides))
-        elif isinstance(obj, self.np.dtype):
-            # numpy.dtype consistent hashing is tricky to get right. This comes
-            # from the fact that atomic np.dtype objects are interned:
-            # ``np.dtype('f4') is np.dtype('f4')``. The situation is
-            # complicated by the fact that this interning does not resist a
-            # simple pickle.load/dump roundtrip:
-            # ``pickle.loads(pickle.dumps(np.dtype('f4'))) is not
-            # np.dtype('f4') Because pickle relies on memoization during
-            # pickling, it is easy to
-            # produce different hashes for seemingly identical objects, such as
-            # ``[np.dtype('f4'), np.dtype('f4')]``
-            # and ``[np.dtype('f4'), pickle.loads(pickle.dumps('f4'))]``.
-            # To prevent memoization from interfering with hashing, we isolate
-            # the serialization (and thus the pickle memoization) of each dtype
-            # using each time a different ``pickle.dumps`` call unrelated to
-            # the current Hasher instance.
-            self._hash.update("_HASHED_DTYPE".encode("utf-8"))
-            self._hash.update(pickle.dumps(obj))
-            return
-        Hasher.save(self, obj)
-
-
-def hash(obj, hash_name="md5", coerce_mmap=False):
-    """Quick calculation of a hash to identify uniquely Python objects
-    containing numpy arrays.
-
-    Parameters
-    ----------
-    hash_name: 'md5' or 'sha1'
-        Hashing algorithm used. sha1 is supposedly safer, but md5 is
-        faster.
-    coerce_mmap: boolean
-        Make no difference between np.memmap and np.ndarray
-    """
-    valid_hash_names = ("md5", "sha1")
-    if hash_name not in valid_hash_names:
-        raise ValueError(
-            "Valid options for 'hash_name' are {}. Got hash_name={!r} instead.".format(
-                valid_hash_names, hash_name
+            values = tf.strings.to_hash_bucket_fast(
+                values, hash_bins, name="hash"
             )
+        if mask is not None:
+            values = tf.add(values, tf.ones_like(values))
+            values = tf.where(mask, tf.zeros_like(values), values)
+        return values
+
+    def compute_output_spec(self, inputs):
+        if self.output_mode == "int":
+            return backend.KerasTensor(shape=inputs.shape, dtype=self.dtype)
+        if len(inputs.shape) >= 1:
+            base_shape = tuple(inputs.shape)[:-1]
+        else:
+            base_shape = ()
+        return backend.KerasTensor(
+            shape=base_shape + (self.num_bins,), dtype=self.dtype
         )
-    if "numpy" in sys.modules:
-        hasher = NumpyHasher(hash_name=hash_name, coerce_mmap=coerce_mmap)
-    else:
-        hasher = Hasher(hash_name=hash_name)
-    return hasher.hash(obj)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "num_bins": self.num_bins,
+                "salt": self.salt,
+                "mask_value": self.mask_value,
+                "output_mode": self.output_mode,
+                "sparse": self.sparse,
+            }
+        )
+        return config
