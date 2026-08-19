@@ -1,369 +1,445 @@
-from __future__ import annotations
+from enum import Enum
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Type, Union
 
-from encodings.aliases import aliases
-from json import dumps
-from re import sub
-from typing import Any, Iterator, List, Tuple
+from fastapi._compat import (
+    PYDANTIC_V2,
+    CoreSchema,
+    GetJsonSchemaHandler,
+    JsonSchemaValue,
+    _model_rebuild,
+    with_info_plain_validator_function,
+)
+from fastapi.logger import logger
+from pydantic import AnyUrl, BaseModel, Field
+from typing_extensions import Annotated, Literal, TypedDict
+from typing_extensions import deprecated as typing_deprecated
 
-from .constant import RE_POSSIBLE_ENCODING_INDICATION, TOO_BIG_SEQUENCE
-from .utils import iana_name, is_multi_byte_encoding, unicode_range
+try:
+    import email_validator
 
+    assert email_validator  # make autoflake ignore the unused import
+    from pydantic import EmailStr
+except ImportError:  # pragma: no cover
 
-class CharsetMatch:
-    def __init__(
-        self,
-        payload: bytes | bytearray,
-        guessed_encoding: str,
-        mean_mess_ratio: float,
-        has_sig_or_bom: bool,
-        languages: CoherenceMatches,
-        decoded_payload: str | None = None,
-        preemptive_declaration: str | None = None,
-    ):
-        self._payload: bytes | bytearray = payload
+    class EmailStr(str):  # type: ignore
+        @classmethod
+        def __get_validators__(cls) -> Iterable[Callable[..., Any]]:
+            yield cls.validate
 
-        self._encoding: str = guessed_encoding
-        self._mean_mess_ratio: float = mean_mess_ratio
-        self._languages: CoherenceMatches = languages
-        self._has_sig_or_bom: bool = has_sig_or_bom
-        self._unicode_ranges: list[str] | None = None
-
-        self._leaves: list[CharsetMatch] = []
-        self._mean_coherence_ratio: float = 0.0
-
-        self._output_payload: bytes | None = None
-        self._output_encoding: str | None = None
-
-        self._string: str | None = decoded_payload
-
-        self._preemptive_declaration: str | None = preemptive_declaration
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CharsetMatch):
-            if isinstance(other, str):
-                return iana_name(other) == self.encoding
-            return False
-        return self.encoding == other.encoding and self.fingerprint == other.fingerprint
-
-    def __lt__(self, other: object) -> bool:
-        """
-        Implemented to make sorted available upon CharsetMatches items.
-        """
-        if not isinstance(other, CharsetMatch):
-            raise ValueError
-
-        chaos_difference: float = abs(self.chaos - other.chaos)
-        coherence_difference: float = abs(self.coherence - other.coherence)
-
-        # Below 0.5% difference --> Use Coherence
-        if chaos_difference < 0.005 and coherence_difference > 0.02:
-            return self.coherence > other.coherence
-        elif chaos_difference < 0.005 and coherence_difference <= 0.02:
-            # When having a difficult decision, use the result that decoded as many multi-byte as possible.
-            # preserve RAM usage!
-            if len(self._payload) >= TOO_BIG_SEQUENCE:
-                return self.chaos < other.chaos
-            return self.multi_byte_usage > other.multi_byte_usage
-
-        return self.chaos < other.chaos
-
-    @property
-    def multi_byte_usage(self) -> float:
-        return 1.0 - (len(str(self)) / len(self.raw))
-
-    def __str__(self) -> str:
-        # Lazy Str Loading
-        if self._string is None:
-            self._string = str(self._payload, self._encoding, "strict")
-            # UTF-7 BOM is encoded in modified Base64 whose byte boundary
-            # can overlap with the next character, so raw-byte stripping
-            # is unreliable. Strip the decoded BOM character instead.
-            if (
-                self._has_sig_or_bom
-                and self._encoding == "utf_7"
-                and self._string
-                and self._string[0] == "\ufeff"
-            ):
-                self._string = self._string[1:]
-        return self._string
-
-    def __repr__(self) -> str:
-        return f"<CharsetMatch '{self.encoding}' fp({self.fingerprint})>"
-
-    def add_submatch(self, other: CharsetMatch) -> None:
-        if not isinstance(other, CharsetMatch) or other == self:
-            raise ValueError(
-                "Unable to add instance <{}> as a submatch of a CharsetMatch".format(
-                    other.__class__
-                )
+        @classmethod
+        def validate(cls, v: Any) -> str:
+            logger.warning(
+                "email-validator not installed, email fields will be treated as str.\n"
+                "To install, run: pip install email-validator"
             )
+            return str(v)
 
-        other._string = None  # Unload RAM usage; dirty trick.
-        self._leaves.append(other)
-
-    @property
-    def encoding(self) -> str:
-        return self._encoding
-
-    @property
-    def encoding_aliases(self) -> list[str]:
-        """
-        Encoding name are known by many name, using this could help when searching for IBM855 when it's listed as CP855.
-        """
-        also_known_as: list[str] = []
-        for u, p in aliases.items():
-            if self.encoding == u:
-                also_known_as.append(p)
-            elif self.encoding == p:
-                also_known_as.append(u)
-        return also_known_as
-
-    @property
-    def bom(self) -> bool:
-        return self._has_sig_or_bom
-
-    @property
-    def byte_order_mark(self) -> bool:
-        return self._has_sig_or_bom
-
-    @property
-    def languages(self) -> list[str]:
-        """
-        Return the complete list of possible languages found in decoded sequence.
-        Usually not really useful. Returned list may be empty even if 'language' property return something != 'Unknown'.
-        """
-        return [e[0] for e in self._languages]
-
-    @property
-    def language(self) -> str:
-        """
-        Most probable language found in decoded sequence. If none were detected or inferred, the property will return
-        "Unknown".
-        """
-        if not self._languages:
-            # Trying to infer the language based on the given encoding
-            # Its either English or we should not pronounce ourselves in certain cases.
-            if "ascii" in self.could_be_from_charset:
-                return "English"
-
-            # doing it there to avoid circular import
-            from charset_normalizer.cd import encoding_languages, mb_encoding_languages
-
-            languages = (
-                mb_encoding_languages(self.encoding)
-                if is_multi_byte_encoding(self.encoding)
-                else encoding_languages(self.encoding)
+        @classmethod
+        def _validate(cls, __input_value: Any, _: Any) -> str:
+            logger.warning(
+                "email-validator not installed, email fields will be treated as str.\n"
+                "To install, run: pip install email-validator"
             )
+            return str(__input_value)
 
-            if len(languages) == 0 or "Latin Based" in languages:
-                return "Unknown"
+        @classmethod
+        def __get_pydantic_json_schema__(
+            cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+        ) -> JsonSchemaValue:
+            return {"type": "string", "format": "email"}
 
-            return languages[0]
-
-        return self._languages[0][0]
-
-    @property
-    def chaos(self) -> float:
-        return self._mean_mess_ratio
-
-    @property
-    def coherence(self) -> float:
-        if not self._languages:
-            return 0.0
-        return self._languages[0][1]
-
-    @property
-    def percent_chaos(self) -> float:
-        return round(self.chaos * 100, ndigits=3)
-
-    @property
-    def percent_coherence(self) -> float:
-        return round(self.coherence * 100, ndigits=3)
-
-    @property
-    def raw(self) -> bytes | bytearray:
-        """
-        Original untouched bytes.
-        """
-        return self._payload
-
-    @property
-    def submatch(self) -> list[CharsetMatch]:
-        return self._leaves
-
-    @property
-    def has_submatch(self) -> bool:
-        return len(self._leaves) > 0
-
-    @property
-    def alphabets(self) -> list[str]:
-        if self._unicode_ranges is not None:
-            return self._unicode_ranges
-        # list detected ranges
-        detected_ranges: list[str | None] = [unicode_range(char) for char in str(self)]
-        # filter and sort
-        self._unicode_ranges = sorted(list({r for r in detected_ranges if r}))
-        return self._unicode_ranges
-
-    @property
-    def could_be_from_charset(self) -> list[str]:
-        """
-        The complete list of encoding that output the exact SAME str result and therefore could be the originating
-        encoding.
-        This list does include the encoding available in property 'encoding'.
-        """
-        return [self._encoding] + [m.encoding for m in self._leaves]
-
-    def output(self, encoding: str = "utf_8") -> bytes:
-        """
-        Method to get re-encoded bytes payload using given target encoding. Default to UTF-8.
-        Any errors will be simply ignored by the encoder NOT replaced.
-        """
-        if self._output_encoding is None or self._output_encoding != encoding:
-            self._output_encoding = encoding
-            decoded_string = str(self)
-            if (
-                self._preemptive_declaration is not None
-                and self._preemptive_declaration.lower()
-                not in ["utf-8", "utf8", "utf_8"]
-            ):
-                patched_header = sub(
-                    RE_POSSIBLE_ENCODING_INDICATION,
-                    lambda m: m.string[m.span()[0] : m.span()[1]].replace(
-                        m.groups()[0],
-                        iana_name(self._output_encoding).replace("_", "-"),  # type: ignore[arg-type]
-                    ),
-                    decoded_string[:8192],
-                    count=1,
-                )
-
-                decoded_string = patched_header + decoded_string[8192:]
-
-            self._output_payload = decoded_string.encode(encoding, "replace")
-
-        return self._output_payload  # type: ignore
-
-    @property
-    def fingerprint(self) -> int:
-        """
-        Retrieve a hash fingerprint of the decoded payload, used for deduplication.
-        """
-        return hash(str(self))
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, source: Type[Any], handler: Callable[[Any], CoreSchema]
+        ) -> CoreSchema:
+            return with_info_plain_validator_function(cls._validate)
 
 
-class CharsetMatches:
-    """
-    Container with every CharsetMatch items ordered by default from most probable to the less one.
-    Act like a list(iterable) but does not implements all related methods.
-    """
+class BaseModelWithConfig(BaseModel):
+    if PYDANTIC_V2:
+        model_config = {"extra": "allow"}
 
-    def __init__(self, results: list[CharsetMatch] | None = None):
-        self._results: list[CharsetMatch] = sorted(results) if results else []
+    else:
 
-    def __iter__(self) -> Iterator[CharsetMatch]:
-        yield from self._results
-
-    def __getitem__(self, item: int | str) -> CharsetMatch:
-        """
-        Retrieve a single item either by its position or encoding name (alias may be used here).
-        Raise KeyError upon invalid index or encoding not present in results.
-        """
-        if isinstance(item, int):
-            return self._results[item]
-        if isinstance(item, str):
-            item = iana_name(item, False)
-            for result in self._results:
-                if item in result.could_be_from_charset:
-                    return result
-        raise KeyError
-
-    def __len__(self) -> int:
-        return len(self._results)
-
-    def __bool__(self) -> bool:
-        return len(self._results) > 0
-
-    def append(self, item: CharsetMatch) -> None:
-        """
-        Insert a single match. Will be inserted accordingly to preserve sort.
-        Can be inserted as a submatch.
-        """
-        if not isinstance(item, CharsetMatch):
-            raise ValueError(
-                "Cannot append instance '{}' to CharsetMatches".format(
-                    str(item.__class__)
-                )
-            )
-        # We should disable the submatch factoring when the input file is too heavy (conserve RAM usage)
-        if len(item.raw) < TOO_BIG_SEQUENCE:
-            for match in self._results:
-                if match.fingerprint == item.fingerprint and match.chaos == item.chaos:
-                    match.add_submatch(item)
-                    return
-        self._results.append(item)
-        self._results = sorted(self._results)
-
-    def best(self) -> CharsetMatch | None:
-        """
-        Simply return the first match. Strict equivalent to matches[0].
-        """
-        if not self._results:
-            return None
-        return self._results[0]
-
-    def first(self) -> CharsetMatch | None:
-        """
-        Redundant method, call the method best(). Kept for BC reasons.
-        """
-        return self.best()
+        class Config:
+            extra = "allow"
 
 
-CoherenceMatch = Tuple[str, float]
-CoherenceMatches = List[CoherenceMatch]
+class Contact(BaseModelWithConfig):
+    name: Optional[str] = None
+    url: Optional[AnyUrl] = None
+    email: Optional[EmailStr] = None
 
 
-class CliDetectionResult:
-    def __init__(
-        self,
-        path: str,
-        encoding: str | None,
-        encoding_aliases: list[str],
-        alternative_encodings: list[str],
-        language: str,
-        alphabets: list[str],
-        has_sig_or_bom: bool,
-        chaos: float,
-        coherence: float,
-        unicode_path: str | None,
-        is_preferred: bool,
-    ):
-        self.path: str = path
-        self.unicode_path: str | None = unicode_path
-        self.encoding: str | None = encoding
-        self.encoding_aliases: list[str] = encoding_aliases
-        self.alternative_encodings: list[str] = alternative_encodings
-        self.language: str = language
-        self.alphabets: list[str] = alphabets
-        self.has_sig_or_bom: bool = has_sig_or_bom
-        self.chaos: float = chaos
-        self.coherence: float = coherence
-        self.is_preferred: bool = is_preferred
+class License(BaseModelWithConfig):
+    name: str
+    identifier: Optional[str] = None
+    url: Optional[AnyUrl] = None
 
-    @property
-    def __dict__(self) -> dict[str, Any]:  # type: ignore
-        return {
-            "path": self.path,
-            "encoding": self.encoding,
-            "encoding_aliases": self.encoding_aliases,
-            "alternative_encodings": self.alternative_encodings,
-            "language": self.language,
-            "alphabets": self.alphabets,
-            "has_sig_or_bom": self.has_sig_or_bom,
-            "chaos": self.chaos,
-            "coherence": self.coherence,
-            "unicode_path": self.unicode_path,
-            "is_preferred": self.is_preferred,
-        }
 
-    def to_json(self) -> str:
-        return dumps(self.__dict__, ensure_ascii=True, indent=4)
+class Info(BaseModelWithConfig):
+    title: str
+    summary: Optional[str] = None
+    description: Optional[str] = None
+    termsOfService: Optional[str] = None
+    contact: Optional[Contact] = None
+    license: Optional[License] = None
+    version: str
+
+
+class ServerVariable(BaseModelWithConfig):
+    enum: Annotated[Optional[List[str]], Field(min_length=1)] = None
+    default: str
+    description: Optional[str] = None
+
+
+class Server(BaseModelWithConfig):
+    url: Union[AnyUrl, str]
+    description: Optional[str] = None
+    variables: Optional[Dict[str, ServerVariable]] = None
+
+
+class Reference(BaseModel):
+    ref: str = Field(alias="$ref")
+
+
+class Discriminator(BaseModel):
+    propertyName: str
+    mapping: Optional[Dict[str, str]] = None
+
+
+class XML(BaseModelWithConfig):
+    name: Optional[str] = None
+    namespace: Optional[str] = None
+    prefix: Optional[str] = None
+    attribute: Optional[bool] = None
+    wrapped: Optional[bool] = None
+
+
+class ExternalDocumentation(BaseModelWithConfig):
+    description: Optional[str] = None
+    url: AnyUrl
+
+
+class Schema(BaseModelWithConfig):
+    # Ref: JSON Schema 2020-12: https://json-schema.org/draft/2020-12/json-schema-core.html#name-the-json-schema-core-vocabu
+    # Core Vocabulary
+    schema_: Optional[str] = Field(default=None, alias="$schema")
+    vocabulary: Optional[str] = Field(default=None, alias="$vocabulary")
+    id: Optional[str] = Field(default=None, alias="$id")
+    anchor: Optional[str] = Field(default=None, alias="$anchor")
+    dynamicAnchor: Optional[str] = Field(default=None, alias="$dynamicAnchor")
+    ref: Optional[str] = Field(default=None, alias="$ref")
+    dynamicRef: Optional[str] = Field(default=None, alias="$dynamicRef")
+    defs: Optional[Dict[str, "SchemaOrBool"]] = Field(default=None, alias="$defs")
+    comment: Optional[str] = Field(default=None, alias="$comment")
+    # Ref: JSON Schema 2020-12: https://json-schema.org/draft/2020-12/json-schema-core.html#name-a-vocabulary-for-applying-s
+    # A Vocabulary for Applying Subschemas
+    allOf: Optional[List["SchemaOrBool"]] = None
+    anyOf: Optional[List["SchemaOrBool"]] = None
+    oneOf: Optional[List["SchemaOrBool"]] = None
+    not_: Optional["SchemaOrBool"] = Field(default=None, alias="not")
+    if_: Optional["SchemaOrBool"] = Field(default=None, alias="if")
+    then: Optional["SchemaOrBool"] = None
+    else_: Optional["SchemaOrBool"] = Field(default=None, alias="else")
+    dependentSchemas: Optional[Dict[str, "SchemaOrBool"]] = None
+    prefixItems: Optional[List["SchemaOrBool"]] = None
+    # TODO: uncomment and remove below when deprecating Pydantic v1
+    # It generales a list of schemas for tuples, before prefixItems was available
+    # items: Optional["SchemaOrBool"] = None
+    items: Optional[Union["SchemaOrBool", List["SchemaOrBool"]]] = None
+    contains: Optional["SchemaOrBool"] = None
+    properties: Optional[Dict[str, "SchemaOrBool"]] = None
+    patternProperties: Optional[Dict[str, "SchemaOrBool"]] = None
+    additionalProperties: Optional["SchemaOrBool"] = None
+    propertyNames: Optional["SchemaOrBool"] = None
+    unevaluatedItems: Optional["SchemaOrBool"] = None
+    unevaluatedProperties: Optional["SchemaOrBool"] = None
+    # Ref: JSON Schema Validation 2020-12: https://json-schema.org/draft/2020-12/json-schema-validation.html#name-a-vocabulary-for-structural
+    # A Vocabulary for Structural Validation
+    type: Optional[str] = None
+    enum: Optional[List[Any]] = None
+    const: Optional[Any] = None
+    multipleOf: Optional[float] = Field(default=None, gt=0)
+    maximum: Optional[float] = None
+    exclusiveMaximum: Optional[float] = None
+    minimum: Optional[float] = None
+    exclusiveMinimum: Optional[float] = None
+    maxLength: Optional[int] = Field(default=None, ge=0)
+    minLength: Optional[int] = Field(default=None, ge=0)
+    pattern: Optional[str] = None
+    maxItems: Optional[int] = Field(default=None, ge=0)
+    minItems: Optional[int] = Field(default=None, ge=0)
+    uniqueItems: Optional[bool] = None
+    maxContains: Optional[int] = Field(default=None, ge=0)
+    minContains: Optional[int] = Field(default=None, ge=0)
+    maxProperties: Optional[int] = Field(default=None, ge=0)
+    minProperties: Optional[int] = Field(default=None, ge=0)
+    required: Optional[List[str]] = None
+    dependentRequired: Optional[Dict[str, Set[str]]] = None
+    # Ref: JSON Schema Validation 2020-12: https://json-schema.org/draft/2020-12/json-schema-validation.html#name-vocabularies-for-semantic-c
+    # Vocabularies for Semantic Content With "format"
+    format: Optional[str] = None
+    # Ref: JSON Schema Validation 2020-12: https://json-schema.org/draft/2020-12/json-schema-validation.html#name-a-vocabulary-for-the-conten
+    # A Vocabulary for the Contents of String-Encoded Data
+    contentEncoding: Optional[str] = None
+    contentMediaType: Optional[str] = None
+    contentSchema: Optional["SchemaOrBool"] = None
+    # Ref: JSON Schema Validation 2020-12: https://json-schema.org/draft/2020-12/json-schema-validation.html#name-a-vocabulary-for-basic-meta
+    # A Vocabulary for Basic Meta-Data Annotations
+    title: Optional[str] = None
+    description: Optional[str] = None
+    default: Optional[Any] = None
+    deprecated: Optional[bool] = None
+    readOnly: Optional[bool] = None
+    writeOnly: Optional[bool] = None
+    examples: Optional[List[Any]] = None
+    # Ref: OpenAPI 3.1.0: https://github.com/OAI/OpenAPI-Specification/blob/main/versions/3.1.0.md#schema-object
+    # Schema Object
+    discriminator: Optional[Discriminator] = None
+    xml: Optional[XML] = None
+    externalDocs: Optional[ExternalDocumentation] = None
+    example: Annotated[
+        Optional[Any],
+        typing_deprecated(
+            "Deprecated in OpenAPI 3.1.0 that now uses JSON Schema 2020-12, "
+            "although still supported. Use examples instead."
+        ),
+    ] = None
+
+
+# Ref: https://json-schema.org/draft/2020-12/json-schema-core.html#name-json-schema-documents
+# A JSON Schema MUST be an object or a boolean.
+SchemaOrBool = Union[Schema, bool]
+
+
+class Example(TypedDict, total=False):
+    summary: Optional[str]
+    description: Optional[str]
+    value: Optional[Any]
+    externalValue: Optional[AnyUrl]
+
+    if PYDANTIC_V2:  # type: ignore [misc]
+        __pydantic_config__ = {"extra": "allow"}
+
+    else:
+
+        class Config:
+            extra = "allow"
+
+
+class ParameterInType(Enum):
+    query = "query"
+    header = "header"
+    path = "path"
+    cookie = "cookie"
+
+
+class Encoding(BaseModelWithConfig):
+    contentType: Optional[str] = None
+    headers: Optional[Dict[str, Union["Header", Reference]]] = None
+    style: Optional[str] = None
+    explode: Optional[bool] = None
+    allowReserved: Optional[bool] = None
+
+
+class MediaType(BaseModelWithConfig):
+    schema_: Optional[Union[Schema, Reference]] = Field(default=None, alias="schema")
+    example: Optional[Any] = None
+    examples: Optional[Dict[str, Union[Example, Reference]]] = None
+    encoding: Optional[Dict[str, Encoding]] = None
+
+
+class ParameterBase(BaseModelWithConfig):
+    description: Optional[str] = None
+    required: Optional[bool] = None
+    deprecated: Optional[bool] = None
+    # Serialization rules for simple scenarios
+    style: Optional[str] = None
+    explode: Optional[bool] = None
+    allowReserved: Optional[bool] = None
+    schema_: Optional[Union[Schema, Reference]] = Field(default=None, alias="schema")
+    example: Optional[Any] = None
+    examples: Optional[Dict[str, Union[Example, Reference]]] = None
+    # Serialization rules for more complex scenarios
+    content: Optional[Dict[str, MediaType]] = None
+
+
+class Parameter(ParameterBase):
+    name: str
+    in_: ParameterInType = Field(alias="in")
+
+
+class Header(ParameterBase):
+    pass
+
+
+class RequestBody(BaseModelWithConfig):
+    description: Optional[str] = None
+    content: Dict[str, MediaType]
+    required: Optional[bool] = None
+
+
+class Link(BaseModelWithConfig):
+    operationRef: Optional[str] = None
+    operationId: Optional[str] = None
+    parameters: Optional[Dict[str, Union[Any, str]]] = None
+    requestBody: Optional[Union[Any, str]] = None
+    description: Optional[str] = None
+    server: Optional[Server] = None
+
+
+class Response(BaseModelWithConfig):
+    description: str
+    headers: Optional[Dict[str, Union[Header, Reference]]] = None
+    content: Optional[Dict[str, MediaType]] = None
+    links: Optional[Dict[str, Union[Link, Reference]]] = None
+
+
+class Operation(BaseModelWithConfig):
+    tags: Optional[List[str]] = None
+    summary: Optional[str] = None
+    description: Optional[str] = None
+    externalDocs: Optional[ExternalDocumentation] = None
+    operationId: Optional[str] = None
+    parameters: Optional[List[Union[Parameter, Reference]]] = None
+    requestBody: Optional[Union[RequestBody, Reference]] = None
+    # Using Any for Specification Extensions
+    responses: Optional[Dict[str, Union[Response, Any]]] = None
+    callbacks: Optional[Dict[str, Union[Dict[str, "PathItem"], Reference]]] = None
+    deprecated: Optional[bool] = None
+    security: Optional[List[Dict[str, List[str]]]] = None
+    servers: Optional[List[Server]] = None
+
+
+class PathItem(BaseModelWithConfig):
+    ref: Optional[str] = Field(default=None, alias="$ref")
+    summary: Optional[str] = None
+    description: Optional[str] = None
+    get: Optional[Operation] = None
+    put: Optional[Operation] = None
+    post: Optional[Operation] = None
+    delete: Optional[Operation] = None
+    options: Optional[Operation] = None
+    head: Optional[Operation] = None
+    patch: Optional[Operation] = None
+    trace: Optional[Operation] = None
+    servers: Optional[List[Server]] = None
+    parameters: Optional[List[Union[Parameter, Reference]]] = None
+
+
+class SecuritySchemeType(Enum):
+    apiKey = "apiKey"
+    http = "http"
+    oauth2 = "oauth2"
+    openIdConnect = "openIdConnect"
+
+
+class SecurityBase(BaseModelWithConfig):
+    type_: SecuritySchemeType = Field(alias="type")
+    description: Optional[str] = None
+
+
+class APIKeyIn(Enum):
+    query = "query"
+    header = "header"
+    cookie = "cookie"
+
+
+class APIKey(SecurityBase):
+    type_: SecuritySchemeType = Field(default=SecuritySchemeType.apiKey, alias="type")
+    in_: APIKeyIn = Field(alias="in")
+    name: str
+
+
+class HTTPBase(SecurityBase):
+    type_: SecuritySchemeType = Field(default=SecuritySchemeType.http, alias="type")
+    scheme: str
+
+
+class HTTPBearer(HTTPBase):
+    scheme: Literal["bearer"] = "bearer"
+    bearerFormat: Optional[str] = None
+
+
+class OAuthFlow(BaseModelWithConfig):
+    refreshUrl: Optional[str] = None
+    scopes: Dict[str, str] = {}
+
+
+class OAuthFlowImplicit(OAuthFlow):
+    authorizationUrl: str
+
+
+class OAuthFlowPassword(OAuthFlow):
+    tokenUrl: str
+
+
+class OAuthFlowClientCredentials(OAuthFlow):
+    tokenUrl: str
+
+
+class OAuthFlowAuthorizationCode(OAuthFlow):
+    authorizationUrl: str
+    tokenUrl: str
+
+
+class OAuthFlows(BaseModelWithConfig):
+    implicit: Optional[OAuthFlowImplicit] = None
+    password: Optional[OAuthFlowPassword] = None
+    clientCredentials: Optional[OAuthFlowClientCredentials] = None
+    authorizationCode: Optional[OAuthFlowAuthorizationCode] = None
+
+
+class OAuth2(SecurityBase):
+    type_: SecuritySchemeType = Field(default=SecuritySchemeType.oauth2, alias="type")
+    flows: OAuthFlows
+
+
+class OpenIdConnect(SecurityBase):
+    type_: SecuritySchemeType = Field(
+        default=SecuritySchemeType.openIdConnect, alias="type"
+    )
+    openIdConnectUrl: str
+
+
+SecurityScheme = Union[APIKey, HTTPBase, OAuth2, OpenIdConnect, HTTPBearer]
+
+
+class Components(BaseModelWithConfig):
+    schemas: Optional[Dict[str, Union[Schema, Reference]]] = None
+    responses: Optional[Dict[str, Union[Response, Reference]]] = None
+    parameters: Optional[Dict[str, Union[Parameter, Reference]]] = None
+    examples: Optional[Dict[str, Union[Example, Reference]]] = None
+    requestBodies: Optional[Dict[str, Union[RequestBody, Reference]]] = None
+    headers: Optional[Dict[str, Union[Header, Reference]]] = None
+    securitySchemes: Optional[Dict[str, Union[SecurityScheme, Reference]]] = None
+    links: Optional[Dict[str, Union[Link, Reference]]] = None
+    # Using Any for Specification Extensions
+    callbacks: Optional[Dict[str, Union[Dict[str, PathItem], Reference, Any]]] = None
+    pathItems: Optional[Dict[str, Union[PathItem, Reference]]] = None
+
+
+class Tag(BaseModelWithConfig):
+    name: str
+    description: Optional[str] = None
+    externalDocs: Optional[ExternalDocumentation] = None
+
+
+class OpenAPI(BaseModelWithConfig):
+    openapi: str
+    info: Info
+    jsonSchemaDialect: Optional[str] = None
+    servers: Optional[List[Server]] = None
+    # Using Any for Specification Extensions
+    paths: Optional[Dict[str, Union[PathItem, Any]]] = None
+    webhooks: Optional[Dict[str, Union[PathItem, Reference]]] = None
+    components: Optional[Components] = None
+    security: Optional[List[Dict[str, List[str]]]] = None
+    tags: Optional[List[Tag]] = None
+    externalDocs: Optional[ExternalDocumentation] = None
+
+
+_model_rebuild(Schema)
+_model_rebuild(Operation)
+_model_rebuild(Encoding)
