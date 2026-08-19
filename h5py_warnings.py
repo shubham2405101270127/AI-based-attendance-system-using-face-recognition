@@ -8,8 +8,14 @@
 #           and contributor agreement.
 
 """
-    This subpackage implements the high-level interface for h5py.
-
-    Don't manually import things from here; the public API lives directly
-    in the top-level package namespace.
+    This module contains the warning classes for h5py. These classes are part of
+    the public API of h5py, and should be imported from this module.
 """
+
+
+class H5pyWarning(UserWarning):
+    pass
+
+
+class H5pyDeprecationWarning(H5pyWarning):
+    pass
