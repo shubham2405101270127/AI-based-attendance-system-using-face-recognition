@@ -1,15 +1,39 @@
-# This file is part of h5py, a Python interface to the HDF5 library.
-#
-# http://www.h5py.org
-#
-# Copyright 2008-2013 Andrew Collette and contributors
-#
-# License:  Standard 3-clause BSD; see "license.txt" for full license terms
-#           and contributor agreement.
+from .connection import AsyncHTTPConnection
+from .connection_pool import AsyncConnectionPool
+from .http11 import AsyncHTTP11Connection
+from .http_proxy import AsyncHTTPProxy
+from .interfaces import AsyncConnectionInterface
 
-"""
-    This subpackage implements the high-level interface for h5py.
+try:
+    from .http2 import AsyncHTTP2Connection
+except ImportError:  # pragma: nocover
 
-    Don't manually import things from here; the public API lives directly
-    in the top-level package namespace.
-"""
+    class AsyncHTTP2Connection:  # type: ignore
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore
+            raise RuntimeError(
+                "Attempted to use http2 support, but the `h2` package is not "
+                "installed. Use 'pip install httpcore[http2]'."
+            )
+
+
+try:
+    from .socks_proxy import AsyncSOCKSProxy
+except ImportError:  # pragma: nocover
+
+    class AsyncSOCKSProxy:  # type: ignore
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore
+            raise RuntimeError(
+                "Attempted to use SOCKS support, but the `socksio` package is not "
+                "installed. Use 'pip install httpcore[socks]'."
+            )
+
+
+__all__ = [
+    "AsyncHTTPConnection",
+    "AsyncConnectionPool",
+    "AsyncHTTPProxy",
+    "AsyncHTTP11Connection",
+    "AsyncHTTP2Connection",
+    "AsyncConnectionInterface",
+    "AsyncSOCKSProxy",
+]

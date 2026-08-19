@@ -1,17 +1,16 @@
-# Copyright 2019 Google Inc. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# This file must be kept very simple, because it is consumed from several
+# places -- it is imported by h11/__init__.py, execfile'd by setup.py, etc.
 
-# Placeholder, to be updated during the release process
-# by the setup.py
-__version__ = "25.12.19"
+# We use a simple scheme:
+#   1.0.0 -> 1.0.0+dev -> 1.1.0 -> 1.1.0+dev
+# where the +dev versions are never released into the wild, they're just what
+# we stick into the VCS in between releases.
+#
+# This is compatible with PEP 440:
+#   http://legacy.python.org/dev/peps/pep-0440/
+# via the use of the "local suffix" "+dev", which is disallowed on index
+# servers and causes 1.0.0+dev to sort after plain 1.0.0, which is what we
+# want. (Contrast with the special suffix 1.0.0.dev, which sorts *before*
+# 1.0.0.)
+
+__version__ = "0.16.0"
