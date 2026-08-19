@@ -1,2 +1,2 @@
-[pytest11]
-anyio = anyio.pytest_plugin
+[console_scripts]
+normalizer = charset_normalizer.cli:cli_detect
