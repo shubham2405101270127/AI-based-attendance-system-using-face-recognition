@@ -1,0 +1,64 @@
+<mxfile host="Electron">
+  <diagram name="Page-1" id="IBlTqPqpbKKcRLoSUDQB">
+    <mxGraphModel dx="1451" dy="1530" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="650" pageHeight="680" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="boundary" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;verticalAlign=top;fontSize=12;" value="&amp;lt;&lt;span style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); background-color: transparent;&quot;&gt;AI-BASED FACE RECOGNITION ATTENDANCE SYSTEM&lt;/span&gt;&lt;span style=&quot;color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255)); background-color: transparent;&quot;&gt;&amp;gt;&lt;/span&gt;" vertex="1">
+          <mxGeometry height="650" width="370" x="160" y="-10" as="geometry" />
+        </mxCell>
+        <mxCell id="student" parent="1" style="shape=umlActor;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;verticalLabelPosition=bottom;verticalAlign=top;" value="Student" vertex="1">
+          <mxGeometry height="70" width="45" x="30" y="290" as="geometry" />
+        </mxCell>
+        <mxCell id="uc1" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Login" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="uc2" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Dashboard" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="uc3" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Register Face Data" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="uc4" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Mark Attendance" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="255" as="geometry" />
+        </mxCell>
+        <mxCell id="uc5" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="View Attendance Status" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="uc6" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="View Attendance History" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="405" as="geometry" />
+        </mxCell>
+        <mxCell id="uc7" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Update Profile" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="480" as="geometry" />
+        </mxCell>
+        <mxCell id="uc8" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#000000;fontSize=12;" value="Logout" vertex="1">
+          <mxGeometry height="60" width="150" x="260" y="555" as="geometry" />
+        </mxCell>
+        <mxCell id="l1" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;entryX=0;entryY=1;entryDx=0;entryDy=0;" target="uc1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l2" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;entryX=0;entryY=1;entryDx=0;entryDy=0;" target="uc2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l3" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;" target="uc3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l4" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;" target="uc4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l5" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;" target="uc5">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l6" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;" target="uc6">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l7" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;entryX=0.078;entryY=0.232;entryDx=0;entryDy=0;entryPerimeter=0;" target="uc7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="l8" edge="1" parent="1" source="student" style="endArrow=none;html=1;strokeColor=#000000;entryX=0;entryY=0;entryDx=0;entryDy=0;" target="uc8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
